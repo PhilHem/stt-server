@@ -14,6 +14,7 @@ type Metrics struct {
 
 	// Gauges
 	RequestsInProgress prometheus.Gauge
+	RequestsQueued     prometheus.Gauge
 	ModelInfo          *prometheus.GaugeVec
 
 	// Histograms
@@ -39,6 +40,11 @@ func NewMetrics() *Metrics {
 		RequestsInProgress: promauto.NewGauge(prometheus.GaugeOpts{
 			Name: "stt_requests_in_progress",
 			Help: "Number of transcription requests currently being processed.",
+		}),
+
+		RequestsQueued: promauto.NewGauge(prometheus.GaugeOpts{
+			Name: "stt_requests_queued",
+			Help: "Number of requests waiting for a processing slot.",
 		}),
 
 		ModelInfo: promauto.NewGaugeVec(prometheus.GaugeOpts{

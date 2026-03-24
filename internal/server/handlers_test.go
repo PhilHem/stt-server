@@ -16,6 +16,7 @@ import (
 
 var testCfg = config.Config{
 	MaxConcurrent:    4,
+	MaxQueue:         8,
 	MaxFileSizeMB:    100,
 	MaxAudioDuration: 600 * time.Second,
 	RequestTimeout:   300 * time.Second,
@@ -23,6 +24,7 @@ var testCfg = config.Config{
 
 var testMetrics = observe.NewMetrics()
 var testSem = make(chan struct{}, testCfg.MaxConcurrent)
+var testQueue = make(chan struct{}, testCfg.MaxQueue)
 var testMaxBody = int64(testCfg.MaxFileSizeMB) << 20
 
 func TestHealthEndpoint(t *testing.T) {
@@ -53,7 +55,7 @@ func TestTranscriptionEndpoint_MissingFile(t *testing.T) {
 
 	w := httptest.NewRecorder()
 
-	handler := handleTranscription(nil, testCfg, testMetrics, testSem, testMaxBody)
+	handler := handleTranscription(nil, testCfg, testMetrics, testSem, testQueue, testMaxBody)
 	handler(w, req)
 
 	resp := w.Result()
@@ -83,7 +85,7 @@ func TestRequestID_Generated(t *testing.T) {
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
 	w := httptest.NewRecorder()
-	handler := handleTranscription(nil, testCfg, testMetrics, testSem, testMaxBody)
+	handler := handleTranscription(nil, testCfg, testMetrics, testSem, testQueue, testMaxBody)
 	handler(w, req)
 
 	reqID := w.Header().Get("X-Request-ID")
@@ -105,7 +107,7 @@ func TestRequestID_Propagated(t *testing.T) {
 	req.Header.Set("X-Request-ID", "upstream-id-123")
 
 	w := httptest.NewRecorder()
-	handler := handleTranscription(nil, testCfg, testMetrics, testSem, testMaxBody)
+	handler := handleTranscription(nil, testCfg, testMetrics, testSem, testQueue, testMaxBody)
 	handler(w, req)
 
 	reqID := w.Header().Get("X-Request-ID")
@@ -124,7 +126,7 @@ func TestRequestID_LiteLLMCallID(t *testing.T) {
 	req.Header.Set("X-Litellm-Call-Id", "litellm-call-456")
 
 	w := httptest.NewRecorder()
-	handler := handleTranscription(nil, testCfg, testMetrics, testSem, testMaxBody)
+	handler := handleTranscription(nil, testCfg, testMetrics, testSem, testQueue, testMaxBody)
 	handler(w, req)
 
 	reqID := w.Header().Get("X-Request-ID")
@@ -133,10 +135,12 @@ func TestRequestID_LiteLLMCallID(t *testing.T) {
 	}
 }
 
-func TestConcurrencyLimit(t *testing.T) {
-	// Fill the semaphore completely
+func TestRateLimitWhenFull(t *testing.T) {
+	// Fill both semaphore and queue completely
 	fullSem := make(chan struct{}, 1)
 	fullSem <- struct{}{} // slot taken
+	fullQueue := make(chan struct{}, 1)
+	fullQueue <- struct{}{} // queue full
 
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
@@ -148,11 +152,15 @@ func TestConcurrencyLimit(t *testing.T) {
 	w := httptest.NewRecorder()
 	cfg := testCfg
 	cfg.MaxConcurrent = 1
-	handler := handleTranscription(nil, cfg, testMetrics, fullSem, testMaxBody)
+	cfg.MaxQueue = 1
+	handler := handleTranscription(nil, cfg, testMetrics, fullSem, fullQueue, testMaxBody)
 	handler(w, req)
 
 	resp := w.Result()
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503 when concurrency limit hit, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 when queue full, got %d", resp.StatusCode)
+	}
+	if ra := resp.Header.Get("Retry-After"); ra != "5" {
+		t.Errorf("expected Retry-After: 5, got: %s", ra)
 	}
 }

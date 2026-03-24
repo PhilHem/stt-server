@@ -15,13 +15,14 @@ import (
 // New creates an HTTP server with all routes wired up.
 func New(rec *recognizer.Recognizer, cfg config.Config, m *observe.Metrics) *http.Server {
 	sem := make(chan struct{}, cfg.MaxConcurrent)
+	queue := make(chan struct{}, cfg.MaxQueue) // queue depth limit
 	maxBodyBytes := int64(cfg.MaxFileSizeMB) << 20
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", handleHealth)
 	mux.Handle("GET /metrics", promhttp.Handler())
 	mux.HandleFunc("GET /v1/models", handleModels(cfg))
-	mux.HandleFunc("POST /v1/audio/transcriptions", handleTranscription(rec, cfg, m, sem, maxBodyBytes))
+	mux.HandleFunc("POST /v1/audio/transcriptions", handleTranscription(rec, cfg, m, sem, queue, maxBodyBytes))
 
 	return &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),

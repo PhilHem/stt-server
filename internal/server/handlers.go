@@ -45,29 +45,58 @@ func handleModels(cfg config.Config) http.HandlerFunc {
 	}
 }
 
-func handleTranscription(rec *recognizer.Recognizer, cfg config.Config, m *observe.Metrics, sem chan struct{}, maxBodyBytes int64) http.HandlerFunc {
+func handleTranscription(rec *recognizer.Recognizer, cfg config.Config, m *observe.Metrics, sem chan struct{}, queue chan struct{}, maxBodyBytes int64) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Concurrency limit FIRST — reject before allocating any resources
+		// Request timeout — applies to queue wait + processing
+		ctx, cancel := context.WithTimeout(r.Context(), cfg.RequestTimeout)
+		defer cancel()
+
+		// Try to get a processing slot immediately
 		select {
 		case sem <- struct{}{}:
 			defer func() { <-sem }()
 		default:
-			m.RequestsTotal.WithLabelValues("503", "").Inc()
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusServiceUnavailable)
-			json.NewEncoder(w).Encode(map[string]any{
-				"error": map[string]any{
-					"message": fmt.Sprintf("server busy: %d concurrent requests in progress", cfg.MaxConcurrent),
-					"type":    "invalid_request_error",
-					"code":    "503",
-				},
-			})
-			return
+			// All slots busy — try to enter the queue
+			select {
+			case queue <- struct{}{}:
+				// In queue — wait for a slot
+				m.RequestsQueued.Inc()
+				select {
+				case sem <- struct{}{}:
+					<-queue // leave queue, enter processing
+					m.RequestsQueued.Dec()
+					defer func() { <-sem }()
+				case <-ctx.Done():
+					<-queue
+					m.RequestsQueued.Dec()
+					m.RequestsTotal.WithLabelValues("408", "").Inc()
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusRequestTimeout)
+					json.NewEncoder(w).Encode(map[string]any{
+						"error": map[string]any{
+							"message": "request timed out while queued",
+							"type":    "server_error",
+							"code":    "408",
+						},
+					})
+					return
+				}
+			default:
+				// Queue full — reject with 429 + Retry-After
+				m.RequestsTotal.WithLabelValues("429", "").Inc()
+				w.Header().Set("Retry-After", "5")
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusTooManyRequests)
+				json.NewEncoder(w).Encode(map[string]any{
+					"error": map[string]any{
+						"message": fmt.Sprintf("server busy: %d requests processing, %d queued", cfg.MaxConcurrent, cfg.MaxQueue),
+						"type":    "rate_limit_error",
+						"code":    "429",
+					},
+				})
+				return
+			}
 		}
-
-		// Request timeout
-		ctx, cancel := context.WithTimeout(r.Context(), cfg.RequestTimeout)
-		defer cancel()
 
 		// Extract W3C traceparent from upstream, or start a new trace
 		ctx = otel.GetTextMapPropagator().Extract(ctx, propagatorCarrier(r.Header))

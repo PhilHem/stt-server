@@ -13,6 +13,7 @@ type Config struct {
 	NumThreads       int
 	Provider         string // "cpu" or "cuda"
 	MaxConcurrent    int
+	MaxQueue         int
 	MaxFileSizeMB    int
 	MaxAudioDuration time.Duration
 	RequestTimeout   time.Duration

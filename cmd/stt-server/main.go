@@ -34,6 +34,7 @@ func main() {
 	flag.StringVar(&logLevel, "log-level", config.EnvOr("STT_LOG_LEVEL", "info"), "Log level: debug, info, warn, error (env: STT_LOG_LEVEL)")
 	flag.StringVar(&otelEndpoint, "otel-endpoint", config.EnvOr("OTEL_EXPORTER_OTLP_ENDPOINT", ""), "OTLP gRPC endpoint for traces (env: OTEL_EXPORTER_OTLP_ENDPOINT)")
 	flag.IntVar(&cfg.MaxConcurrent, "max-concurrent", config.EnvInt("STT_MAX_CONCURRENT", 4), "Max concurrent transcription requests (env: STT_MAX_CONCURRENT)")
+	flag.IntVar(&cfg.MaxQueue, "max-queue", config.EnvInt("STT_MAX_QUEUE", 8), "Max queued requests waiting for a slot (env: STT_MAX_QUEUE)")
 	flag.IntVar(&cfg.MaxFileSizeMB, "max-file-size", config.EnvInt("STT_MAX_FILE_SIZE_MB", 100), "Max upload file size in MB (env: STT_MAX_FILE_SIZE_MB)")
 	flag.IntVar(&maxAudioSec, "max-audio-duration", config.EnvInt("STT_MAX_AUDIO_DURATION", 600), "Max audio duration in seconds (env: STT_MAX_AUDIO_DURATION)")
 	flag.IntVar(&requestTimeoutSec, "request-timeout", config.EnvInt("STT_REQUEST_TIMEOUT", 300), "Request timeout in seconds (env: STT_REQUEST_TIMEOUT)")
@@ -92,6 +93,7 @@ func main() {
 		"threads", cfg.NumThreads,
 		"provider", cfg.Provider,
 		"max_concurrent", cfg.MaxConcurrent,
+		"max_queue", cfg.MaxQueue,
 		"max_file_size_mb", cfg.MaxFileSizeMB,
 		"max_audio_duration_s", int(cfg.MaxAudioDuration.Seconds()),
 		"request_timeout_s", int(cfg.RequestTimeout.Seconds()),
