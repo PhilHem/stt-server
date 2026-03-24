@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	sherpa "github.com/k2-fsa/sherpa-onnx-go/sherpa_onnx"
 )
@@ -18,9 +19,10 @@ type Recognizer struct {
 
 // TranscriptionResult holds the output of a transcription.
 type TranscriptionResult struct {
-	Text     string
-	Language string
-	Duration float32 // audio duration in seconds
+	Text          string
+	Language      string
+	Duration      float32       // audio duration in seconds
+	InferenceTime time.Duration // model inference time
 }
 
 func newRecognizer(cfg Config) (*Recognizer, error) {
@@ -52,13 +54,17 @@ func (r *Recognizer) Transcribe(samples []float32, sampleRate int) *Transcriptio
 	defer sherpa.DeleteOfflineStream(stream)
 
 	stream.AcceptWaveform(sampleRate, samples)
+
+	inferStart := time.Now()
 	r.inner.Decode(stream)
+	inferElapsed := time.Since(inferStart)
 
 	result := stream.GetResult()
 	return &TranscriptionResult{
-		Text:     strings.TrimSpace(result.Text),
-		Language: result.Lang,
-		Duration: float32(len(samples)) / float32(sampleRate),
+		Text:          strings.TrimSpace(result.Text),
+		Language:      result.Lang,
+		Duration:      float32(len(samples)) / float32(sampleRate),
+		InferenceTime: inferElapsed,
 	}
 }
 

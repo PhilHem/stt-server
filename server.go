@@ -6,13 +6,17 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func newServer(rec *Recognizer, port int) *http.Server {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", handleHealth)
+	mux.Handle("GET /metrics", promhttp.Handler())
 	mux.HandleFunc("POST /v1/audio/transcriptions", handleTranscription(rec))
 
 	return &http.Server{
@@ -34,12 +38,14 @@ func handleTranscription(rec *Recognizer) http.HandlerFunc {
 
 		// Parse multipart form (max 100 MB)
 		if err := r.ParseMultipartForm(100 << 20); err != nil {
+			requestsTotal.WithLabelValues("400").Inc()
 			httpError(w, r, http.StatusBadRequest, "invalid multipart form: %v", err)
 			return
 		}
 
 		file, header, err := r.FormFile("file")
 		if err != nil {
+			requestsTotal.WithLabelValues("400").Inc()
 			httpError(w, r, http.StatusBadRequest, "missing 'file' field: %v", err)
 			return
 		}
@@ -47,6 +53,7 @@ func handleTranscription(rec *Recognizer) http.HandlerFunc {
 
 		audioData, err := io.ReadAll(file)
 		if err != nil {
+			requestsTotal.WithLabelValues("500").Inc()
 			httpError(w, r, http.StatusInternalServerError, "failed to read file: %v", err)
 			return
 		}
@@ -54,6 +61,7 @@ func handleTranscription(rec *Recognizer) http.HandlerFunc {
 		// Convert to 16kHz mono PCM via ffmpeg
 		samples, sampleRate, err := decodeAudio(audioData, header.Filename)
 		if err != nil {
+			requestsTotal.WithLabelValues("400").Inc()
 			httpError(w, r, http.StatusBadRequest, "audio decode failed: %v", err)
 			return
 		}
@@ -61,11 +69,20 @@ func handleTranscription(rec *Recognizer) http.HandlerFunc {
 		result := rec.Transcribe(samples, sampleRate)
 
 		elapsed := time.Since(start)
+
+		// Record metrics
+		requestsTotal.WithLabelValues("200").Inc()
+		requestDuration.Observe(elapsed.Seconds())
+		inferenceDuration.Observe(result.InferenceTime.Seconds())
+		audioDuration.Observe(float64(result.Duration))
+		audioBytesTotal.Add(float64(len(audioData)))
+
 		slog.Info("transcribed",
 			"file", header.Filename,
 			"size_bytes", len(audioData),
 			"duration_s", fmt.Sprintf("%.1f", result.Duration),
 			"elapsed_ms", elapsed.Milliseconds(),
+			"inference_ms", result.InferenceTime.Milliseconds(),
 			"lang", result.Language,
 		)
 
@@ -99,7 +116,7 @@ func httpError(w http.ResponseWriter, r *http.Request, code int, format string, 
 		"error": map[string]any{
 			"message": msg,
 			"type":    "invalid_request_error",
-			"code":    nil,
+			"code":    strconv.Itoa(code),
 		},
 	})
 }
