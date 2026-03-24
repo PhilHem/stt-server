@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.3.1 - 2026-03-25
+
+### Added
+
+- SRT and VTT subtitle response formats (`response_format=srt` / `response_format=vtt`) (#6)
+- Word-level timestamps in verbose_json: `words[]` with `{word, start, end}` and `segments[]` with `{id, start, end, text}` (#7)
+- `task` field in verbose_json response (always `"transcribe"`) (#5)
+- `language` request parameter accepted as fallback when model auto-detection returns empty (#8)
+- Model-agnostic detection: server auto-detects Whisper, SenseVoice, Paraformer, and NeMo CTC models alongside Parakeet
+- Build version embedded via ldflags: `--version` flag, version in `/health`, `stt_build_info` metric
+- Comprehensive test suite: 45 tests (up from 19), covering formats, integration, error paths
+- E2E test script: `scripts/test-e2e.sh` for live server validation (#10)
+- Architecture Decision Records in `docs/adr/` (API compat scope, unsupported params, queue design)
+
 ## v0.3.0 - 2026-03-25
 
 ### Changed
