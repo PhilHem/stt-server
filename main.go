@@ -2,7 +2,8 @@ package main
 
 import (
 	"flag"
-	"log"
+	"log/slog"
+	"os"
 	"runtime"
 )
 
@@ -14,7 +15,7 @@ type Config struct {
 }
 
 func main() {
-	var model, cacheDir string
+	var model, cacheDir, logFormat, logLevel string
 	cfg := Config{}
 
 	flag.StringVar(&model, "model", envOr("STT_MODEL", ""), "Model name or path (env: STT_MODEL)")
@@ -22,29 +23,44 @@ func main() {
 	flag.IntVar(&cfg.Port, "port", envInt("STT_PORT", 8000), "HTTP listen port (env: STT_PORT)")
 	flag.IntVar(&cfg.NumThreads, "num-threads", envInt("STT_NUM_THREADS", runtime.NumCPU()), "Inference threads (env: STT_NUM_THREADS)")
 	flag.StringVar(&cfg.Provider, "provider", envOr("STT_PROVIDER", "cpu"), "ONNX Runtime provider: cpu or cuda (env: STT_PROVIDER)")
+	flag.StringVar(&logFormat, "log-format", envOr("STT_LOG_FORMAT", "text"), "Log format: text or json (env: STT_LOG_FORMAT)")
+	flag.StringVar(&logLevel, "log-level", envOr("STT_LOG_LEVEL", "info"), "Log level: debug, info, warn, error (env: STT_LOG_LEVEL)")
 	flag.Parse()
 
+	if err := setupLogging(logFormat, logLevel); err != nil {
+		slog.Error("invalid logging config", "error", err)
+		os.Exit(1)
+	}
+
 	if model == "" {
-		log.Fatal("--model or STT_MODEL is required")
+		slog.Error("--model or STT_MODEL is required")
+		os.Exit(1)
 	}
 
 	modelDir, err := resolveModel(model, cacheDir)
 	if err != nil {
-		log.Fatalf("Failed to resolve model: %v", err)
+		slog.Error("failed to resolve model", "error", err)
+		os.Exit(1)
 	}
 	cfg.ModelDir = modelDir
 
 	recognizer, err := newRecognizer(cfg)
 	if err != nil {
-		log.Fatalf("Failed to load model: %v", err)
+		slog.Error("failed to load model", "error", err)
+		os.Exit(1)
 	}
 	defer recognizer.Close()
 
-	log.Printf("Model loaded from %s (%d threads, provider=%s)", cfg.ModelDir, cfg.NumThreads, cfg.Provider)
+	slog.Info("model loaded",
+		"path", cfg.ModelDir,
+		"threads", cfg.NumThreads,
+		"provider", cfg.Provider,
+	)
 
 	srv := newServer(recognizer, cfg.Port)
-	log.Printf("Listening on :%d", cfg.Port)
+	slog.Info("listening", "port", cfg.Port)
 	if err := srv.ListenAndServe(); err != nil {
-		log.Fatal(err)
+		slog.Error("server stopped", "error", err)
+		os.Exit(1)
 	}
 }

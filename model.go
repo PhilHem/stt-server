@@ -1,16 +1,15 @@
 package main
 
 import (
+	"archive/tar"
 	"compress/bzip2"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
-
-	"archive/tar"
 )
 
 const (
@@ -48,14 +47,13 @@ func resolveModel(model, cacheDir string) (string, error) {
 
 	// Already cached?
 	if _, err := os.Stat(filepath.Join(modelDir, "tokens.txt")); err == nil {
-		log.Printf("Using cached model: %s", modelDir)
+		slog.Info("using cached model", "path", modelDir)
 		return modelDir, nil
 	}
 
 	// Download from sherpa-onnx GitHub releases
 	url := fmt.Sprintf(sherpaReleaseURL, model)
-	log.Printf("Downloading model %s ...", model)
-	log.Printf("  URL: %s", url)
+	slog.Info("downloading model", "model", model, "url", url)
 
 	if err := downloadAndExtract(url, cacheDir); err != nil {
 		return "", fmt.Errorf("download model %s: %w", model, err)
@@ -66,7 +64,7 @@ func resolveModel(model, cacheDir string) (string, error) {
 		return "", fmt.Errorf("model downloaded but tokens.txt not found in %s", modelDir)
 	}
 
-	log.Printf("Model cached at: %s", modelDir)
+	slog.Info("model cached", "path", modelDir)
 	return modelDir, nil
 }
 
@@ -82,9 +80,8 @@ func downloadAndExtract(url, destDir string) error {
 		return fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
 	}
 
-	// GitHub redirects to a CDN, so Content-Length may be available
 	if resp.ContentLength > 0 {
-		log.Printf("  Size: %d MB", resp.ContentLength/(1024*1024))
+		slog.Info("download started", "size_mb", resp.ContentLength/(1024*1024))
 	}
 
 	return extractTarBz2(resp.Body, destDir)
