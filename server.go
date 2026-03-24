@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -33,10 +34,11 @@ func newServer(rec *Recognizer, cfg Config) *http.Server {
 	mux.HandleFunc("POST /v1/audio/transcriptions", handleTranscription(rec, cfg, sem, maxBodyBytes))
 
 	return &http.Server{
-		Addr:         fmt.Sprintf(":%d", cfg.Port),
-		Handler:      mux,
-		ReadTimeout:  cfg.RequestTimeout + 10*time.Second, // slightly more than request timeout
-		WriteTimeout: cfg.RequestTimeout + 10*time.Second,
+		Addr:              fmt.Sprintf(":%d", cfg.Port),
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       cfg.RequestTimeout + 10*time.Second, // slightly more than request timeout
+		WriteTimeout:      cfg.RequestTimeout + 10*time.Second,
 	}
 }
 
@@ -83,6 +85,7 @@ func handleTranscription(rec *Recognizer, cfg Config, sem chan struct{}, maxBody
 		if reqID == "" {
 			reqID = uuid.NewString()
 		}
+		reqID = sanitizeRequestID(reqID)
 		w.Header().Set(requestIDHeader, reqID)
 		span.SetAttributes(attribute.String("request.id", reqID))
 
@@ -114,6 +117,9 @@ func handleTranscription(rec *Recognizer, cfg Config, sem chan struct{}, maxBody
 			httpError(w, r, ctx, reqID, http.StatusBadRequest, "invalid multipart form: %v", err)
 			return
 		}
+		if r.MultipartForm != nil {
+			defer r.MultipartForm.RemoveAll()
+		}
 
 		file, header, err := r.FormFile("file")
 		if err != nil {
@@ -137,18 +143,10 @@ func handleTranscription(rec *Recognizer, cfg Config, sem chan struct{}, maxBody
 			attribute.Int("audio.size_bytes", len(audioData)),
 		)
 
-		// Check context before expensive operations
-		if ctx.Err() != nil {
-			requestsTotal.WithLabelValues("408", "").Inc()
-			span.SetStatus(codes.Error, "request timeout")
-			httpError(w, r, ctx, reqID, http.StatusRequestTimeout, "request timed out")
-			return
-		}
-
 		// Convert to 16kHz mono PCM via ffmpeg
 		_, decodeSpan := tracer.Start(ctx, "audio.decode")
 		decodeStart := time.Now()
-		samples, sampleRate, err := decodeAudio(audioData, header.Filename)
+		samples, sampleRate, err := decodeAudio(ctx, audioData, header.Filename)
 		decodeElapsed := time.Since(decodeStart)
 		decodeSpan.End()
 
@@ -170,18 +168,17 @@ func handleTranscription(rec *Recognizer, cfg Config, sem chan struct{}, maxBody
 			return
 		}
 
-		// Check context before inference
-		if ctx.Err() != nil {
-			requestsTotal.WithLabelValues("408", "").Inc()
-			span.SetStatus(codes.Error, "request timeout")
-			httpError(w, r, ctx, reqID, http.StatusRequestTimeout, "request timed out before inference")
-			return
-		}
-
 		// Inference
 		_, inferSpan := tracer.Start(ctx, "model.inference")
-		result := rec.Transcribe(samples, sampleRate)
+		result, err := rec.Transcribe(ctx, samples, sampleRate)
 		inferSpan.End()
+
+		if err != nil {
+			requestsTotal.WithLabelValues("408", "").Inc()
+			span.SetStatus(codes.Error, "inference failed")
+			httpError(w, r, ctx, reqID, http.StatusRequestTimeout, "transcription failed: %v", err)
+			return
+		}
 
 		elapsed := time.Since(start)
 		lang := result.Language
@@ -238,6 +235,24 @@ func handleTranscription(rec *Recognizer, cfg Config, sem chan struct{}, maxBody
 			})
 		}
 	}
+}
+
+func sanitizeRequestID(id string) string {
+	// Allow UUID chars plus common ID formats
+	var b strings.Builder
+	for _, r := range id {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			b.WriteRune(r)
+		}
+	}
+	s := b.String()
+	if len(s) > 128 {
+		s = s[:128]
+	}
+	if s == "" {
+		return uuid.NewString()
+	}
+	return s
 }
 
 func httpError(w http.ResponseWriter, r *http.Request, ctx context.Context, reqID string, code int, format string, args ...any) {

@@ -45,10 +45,7 @@ func setupTracing(ctx context.Context, endpoint, serviceName string) (func(conte
 	)
 
 	otel.SetTracerProvider(tp)
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
-		propagation.TraceContext{}, // W3C traceparent
-		propagation.Baggage{},
-	))
+	otel.SetTextMapPropagator(propagation.TraceContext{})
 
 	slog.Info("tracing enabled", "endpoint", endpoint, "service", serviceName)
 	return tp.Shutdown, nil

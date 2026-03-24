@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -46,25 +47,39 @@ func newRecognizer(cfg Config) (*Recognizer, error) {
 	return &Recognizer{inner: r}, nil
 }
 
-func (r *Recognizer) Transcribe(samples []float32, sampleRate int) *TranscriptionResult {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+func (r *Recognizer) Transcribe(ctx context.Context, samples []float32, sampleRate int) (*TranscriptionResult, error) {
+	type result struct {
+		res *TranscriptionResult
+	}
+	ch := make(chan result, 1)
 
-	stream := sherpa.NewOfflineStream(r.inner)
-	defer sherpa.DeleteOfflineStream(stream)
+	go func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
 
-	stream.AcceptWaveform(sampleRate, samples)
+		stream := sherpa.NewOfflineStream(r.inner)
+		defer sherpa.DeleteOfflineStream(stream)
 
-	inferStart := time.Now()
-	r.inner.Decode(stream)
-	inferElapsed := time.Since(inferStart)
+		stream.AcceptWaveform(sampleRate, samples)
 
-	result := stream.GetResult()
-	return &TranscriptionResult{
-		Text:          strings.TrimSpace(result.Text),
-		Language:      result.Lang,
-		Duration:      float32(len(samples)) / float32(sampleRate),
-		InferenceTime: inferElapsed,
+		inferStart := time.Now()
+		r.inner.Decode(stream)
+		inferElapsed := time.Since(inferStart)
+
+		out := stream.GetResult()
+		ch <- result{res: &TranscriptionResult{
+			Text:          strings.TrimSpace(out.Text),
+			Language:      out.Lang,
+			Duration:      float32(len(samples)) / float32(sampleRate),
+			InferenceTime: inferElapsed,
+		}}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return nil, fmt.Errorf("inference timed out: %w", ctx.Err())
+	case r := <-ch:
+		return r.res, nil
 	}
 }
 
