@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"log"
-	"os"
 	"runtime"
 )
 
@@ -15,22 +14,25 @@ type Config struct {
 }
 
 func main() {
+	var model, cacheDir string
 	cfg := Config{}
 
-	flag.StringVar(&cfg.ModelDir, "model", envOr("STT_MODEL", ""), "Path to sherpa-onnx model directory (env: STT_MODEL)")
+	flag.StringVar(&model, "model", envOr("STT_MODEL", ""), "Model name or path (env: STT_MODEL)")
+	flag.StringVar(&cacheDir, "cache-dir", envOr("STT_CACHE_DIR", ""), "Model cache directory (env: STT_CACHE_DIR)")
 	flag.IntVar(&cfg.Port, "port", envInt("STT_PORT", 8000), "HTTP listen port (env: STT_PORT)")
 	flag.IntVar(&cfg.NumThreads, "num-threads", envInt("STT_NUM_THREADS", runtime.NumCPU()), "Inference threads (env: STT_NUM_THREADS)")
 	flag.StringVar(&cfg.Provider, "provider", envOr("STT_PROVIDER", "cpu"), "ONNX Runtime provider: cpu or cuda (env: STT_PROVIDER)")
 	flag.Parse()
 
-	if cfg.ModelDir == "" {
+	if model == "" {
 		log.Fatal("--model or STT_MODEL is required")
 	}
 
-	// Verify model directory exists
-	if _, err := os.Stat(cfg.ModelDir); os.IsNotExist(err) {
-		log.Fatalf("Model directory not found: %s", cfg.ModelDir)
+	modelDir, err := resolveModel(model, cacheDir)
+	if err != nil {
+		log.Fatalf("Failed to resolve model: %v", err)
 	}
+	cfg.ModelDir = modelDir
 
 	recognizer, err := newRecognizer(cfg)
 	if err != nil {

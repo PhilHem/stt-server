@@ -65,9 +65,15 @@ COPY --from=go-builder /usr/local/lib/libsherpa-onnx-cxx-api.so /usr/local/lib/
 COPY --from=go-builder /usr/local/lib/libonnxruntime.so /usr/local/lib/
 RUN ldconfig
 
-# Model is mounted at runtime: -v /path/to/model:/model
-ENV STT_MODEL=/model
+# Model: pass a name to auto-download, or mount a local directory.
+#   Auto-download:  -e STT_MODEL=sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8
+#   Local mount:    -e STT_MODEL=/model -v /path/to/model:/model:ro
+#
+# Cache dir persists downloaded models across container restarts.
+ENV STT_MODEL=""
+ENV STT_CACHE_DIR=/opt/stt/cache
 ENV STT_PORT=8000
+VOLUME /opt/stt/cache
 
 EXPOSE 8000
 
