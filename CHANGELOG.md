@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.3.0 - 2026-03-25
+
+### Changed
+
+- Overloaded server now returns 429 with `Retry-After: 5` header instead of 503. OpenAI SDKs and LiteLLM retry 429 automatically with exponential backoff.
+- Requests queue transparently when all processing slots are busy, up to a configurable depth (`--max-queue`, default 8). Only when the queue is also full does the client see 429.
+
+### Added
+
+- New config: `--max-queue` / `STT_MAX_QUEUE` (default 8) — max requests waiting for a slot
+- New metric: `stt_requests_queued` — number of requests currently waiting in queue
+
 ## v0.2.2 - 2026-03-24
 
 ### Fixed
