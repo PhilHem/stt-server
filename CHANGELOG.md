@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.1 - 2026-03-24
+
+### Added
+
+- Container images now automatically built and pushed to `ghcr.io/philhem/stt-server` on version tags
+- Images tagged with full semver (`v0.2.1`), major.minor (`0.2`), and commit SHA
+
 ## v0.2.0 - 2026-03-24
 
 ### Added
