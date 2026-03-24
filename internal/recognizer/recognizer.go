@@ -25,15 +25,17 @@ type Config struct {
 	ModelDir   string
 	NumThreads int
 	Provider   string // "cpu" or "cuda"
+	Language   string // ISO-639-1 hint (used by Whisper/SenseVoice, ignored by Parakeet)
 }
 
 // Recognizer wraps sherpa-onnx offline recognition with mutex serialization.
 // A WaitGroup tracks in-flight inference goroutines so Close() can wait
 // for them before destroying the C object (prevents use-after-free).
 type Recognizer struct {
-	inner *sherpa.OfflineRecognizer
-	mu    sync.Mutex
-	wg    sync.WaitGroup
+	inner     *sherpa.OfflineRecognizer
+	mu        sync.Mutex
+	wg        sync.WaitGroup
+	ModelType string // detected model type (e.g. "nemo_transducer", "whisper")
 }
 
 // New creates a Recognizer from the given configuration.
@@ -46,7 +48,8 @@ func New(cfg Config) (*Recognizer, error) {
 	config.ModelConfig.Provider = cfg.Provider
 
 	// Auto-detect model type from files present in the directory
-	if err := detectModel(&config, cfg.ModelDir); err != nil {
+	modelType, err := detectModel(&config, cfg.ModelDir, cfg.Language)
+	if err != nil {
 		return nil, err
 	}
 
@@ -55,7 +58,7 @@ func New(cfg Config) (*Recognizer, error) {
 		return nil, fmt.Errorf("sherpa-onnx failed to create recognizer (check model files)")
 	}
 
-	return &Recognizer{inner: r}, nil
+	return &Recognizer{inner: r, ModelType: modelType}, nil
 }
 
 // Transcribe runs speech recognition on the given audio samples.

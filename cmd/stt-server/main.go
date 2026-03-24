@@ -98,6 +98,7 @@ func main() {
 
 	slog.Info("model loaded",
 		"version", config.Version,
+		"model_type", rec.ModelType,
 		"path", cfg.ModelDir,
 		"threads", cfg.NumThreads,
 		"provider", cfg.Provider,
