@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.2.2 - 2026-03-24
+
+### Fixed
+
+- Server no longer crashes when transcribing audio without speech (e.g., pure tones, silence, music). sherpa-onnx can return nil results for non-speech audio; now handled gracefully with an empty transcription.
+
 ## v0.2.1 - 2026-03-24
 
 ### Added
