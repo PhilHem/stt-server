@@ -2,8 +2,10 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"runtime"
 )
 
@@ -50,6 +52,13 @@ func main() {
 		os.Exit(1)
 	}
 	defer recognizer.Close()
+
+	// Publish static model info as Prometheus gauge
+	modelInfo.WithLabelValues(
+		filepath.Base(cfg.ModelDir),
+		cfg.Provider,
+		fmt.Sprintf("%d", cfg.NumThreads),
+	).Set(1)
 
 	slog.Info("model loaded",
 		"path", cfg.ModelDir,

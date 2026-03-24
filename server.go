@@ -35,6 +35,8 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 func handleTranscription(rec *Recognizer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		requestsInProgress.Inc()
+		defer requestsInProgress.Dec()
 
 		// Parse multipart form (max 100 MB)
 		if err := r.ParseMultipartForm(100 << 20); err != nil {
@@ -59,12 +61,15 @@ func handleTranscription(rec *Recognizer) http.HandlerFunc {
 		}
 
 		// Convert to 16kHz mono PCM via ffmpeg
+		decodeStart := time.Now()
 		samples, sampleRate, err := decodeAudio(audioData, header.Filename)
+		decodeElapsed := time.Since(decodeStart)
 		if err != nil {
 			requestsTotal.WithLabelValues("400").Inc()
 			httpError(w, r, http.StatusBadRequest, "audio decode failed: %v", err)
 			return
 		}
+		decodeDuration.Observe(decodeElapsed.Seconds())
 
 		result := rec.Transcribe(samples, sampleRate)
 
@@ -82,6 +87,7 @@ func handleTranscription(rec *Recognizer) http.HandlerFunc {
 			"size_bytes", len(audioData),
 			"duration_s", fmt.Sprintf("%.1f", result.Duration),
 			"elapsed_ms", elapsed.Milliseconds(),
+			"decode_ms", decodeElapsed.Milliseconds(),
 			"inference_ms", result.InferenceTime.Milliseconds(),
 			"lang", result.Language,
 		)
