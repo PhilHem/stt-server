@@ -11,14 +11,19 @@ RUN CGO_ENABLED=1 go build -o /stt-server .
 RUN cp $(go env GOMODCACHE)/github.com/k2-fsa/sherpa-onnx-go-linux@*/lib/x86_64-unknown-linux-gnu/*.so /usr/local/lib/ && \
     ldconfig
 
+# Static ffmpeg binary (all codecs, no deps, ~70 MB)
+FROM mwader/static-ffmpeg:7.1 AS ffmpeg
+
 # ---
 
 FROM debian:bookworm-slim
 
+# curl for healthcheck, ca-certificates for TLS
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ffmpeg curl ca-certificates && \
+    apt-get install -y --no-install-recommends curl ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
+COPY --from=ffmpeg /ffmpeg /usr/local/bin/ffmpeg
 COPY --from=builder /stt-server /usr/local/bin/stt-server
 COPY --from=builder /usr/local/lib/libsherpa-onnx-c-api.so /usr/local/lib/
 COPY --from=builder /usr/local/lib/libsherpa-onnx-cxx-api.so /usr/local/lib/
