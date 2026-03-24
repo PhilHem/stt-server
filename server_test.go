@@ -8,7 +8,18 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
+
+var testCfg = Config{
+	MaxConcurrent:    4,
+	MaxFileSizeMB:    100,
+	MaxAudioDuration: 600 * time.Second,
+	RequestTimeout:   300 * time.Second,
+}
+
+var testSem = make(chan struct{}, testCfg.MaxConcurrent)
+var testMaxBody = int64(testCfg.MaxFileSizeMB) << 20
 
 func TestHealthEndpoint(t *testing.T) {
 	req := httptest.NewRequest("GET", "/health", nil)
@@ -38,7 +49,7 @@ func TestTranscriptionEndpoint_MissingFile(t *testing.T) {
 
 	w := httptest.NewRecorder()
 
-	handler := handleTranscription(nil)
+	handler := handleTranscription(nil, testCfg, testSem, testMaxBody)
 	handler(w, req)
 
 	resp := w.Result()
@@ -68,14 +79,13 @@ func TestRequestID_Generated(t *testing.T) {
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
 	w := httptest.NewRecorder()
-	handler := handleTranscription(nil)
+	handler := handleTranscription(nil, testCfg, testSem, testMaxBody)
 	handler(w, req)
 
 	reqID := w.Header().Get("X-Request-ID")
 	if reqID == "" {
 		t.Error("expected X-Request-ID in response headers")
 	}
-	// UUID format: 8-4-4-4-12
 	if len(reqID) != 36 {
 		t.Errorf("expected UUID format, got: %s", reqID)
 	}
@@ -91,7 +101,7 @@ func TestRequestID_Propagated(t *testing.T) {
 	req.Header.Set("X-Request-ID", "upstream-id-123")
 
 	w := httptest.NewRecorder()
-	handler := handleTranscription(nil)
+	handler := handleTranscription(nil, testCfg, testSem, testMaxBody)
 	handler(w, req)
 
 	reqID := w.Header().Get("X-Request-ID")
@@ -110,11 +120,35 @@ func TestRequestID_LiteLLMCallID(t *testing.T) {
 	req.Header.Set("X-Litellm-Call-Id", "litellm-call-456")
 
 	w := httptest.NewRecorder()
-	handler := handleTranscription(nil)
+	handler := handleTranscription(nil, testCfg, testSem, testMaxBody)
 	handler(w, req)
 
 	reqID := w.Header().Get("X-Request-ID")
 	if reqID != "litellm-call-456" {
 		t.Errorf("expected LiteLLM call ID 'litellm-call-456', got: %s", reqID)
+	}
+}
+
+func TestConcurrencyLimit(t *testing.T) {
+	// Fill the semaphore completely
+	fullSem := make(chan struct{}, 1)
+	fullSem <- struct{}{} // slot taken
+
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	writer.Close()
+
+	req := httptest.NewRequest("POST", "/v1/audio/transcriptions", &buf)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	w := httptest.NewRecorder()
+	cfg := testCfg
+	cfg.MaxConcurrent = 1
+	handler := handleTranscription(nil, cfg, fullSem, testMaxBody)
+	handler(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when concurrency limit hit, got %d", resp.StatusCode)
 	}
 }

@@ -22,19 +22,21 @@ const requestIDHeader = "X-Request-ID"
 
 var tracer = otel.Tracer("stt-server")
 
-func newServer(rec *Recognizer, port int, modelName string) *http.Server {
-	mux := http.NewServeMux()
+func newServer(rec *Recognizer, cfg Config) *http.Server {
+	sem := make(chan struct{}, cfg.MaxConcurrent)
+	maxBodyBytes := int64(cfg.MaxFileSizeMB) << 20
 
+	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", handleHealth)
 	mux.Handle("GET /metrics", promhttp.Handler())
-	mux.HandleFunc("GET /v1/models", handleModels(modelName))
-	mux.HandleFunc("POST /v1/audio/transcriptions", handleTranscription(rec))
+	mux.HandleFunc("GET /v1/models", handleModels(cfg))
+	mux.HandleFunc("POST /v1/audio/transcriptions", handleTranscription(rec, cfg, sem, maxBodyBytes))
 
 	return &http.Server{
-		Addr:         fmt.Sprintf(":%d", port),
+		Addr:         fmt.Sprintf(":%d", cfg.Port),
 		Handler:      mux,
-		ReadTimeout:  300 * time.Second, // large audio uploads
-		WriteTimeout: 300 * time.Second,
+		ReadTimeout:  cfg.RequestTimeout + 10*time.Second, // slightly more than request timeout
+		WriteTimeout: cfg.RequestTimeout + 10*time.Second,
 	}
 }
 
@@ -43,19 +45,14 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
-// handleModels returns an OpenAI-compatible /v1/models response.
-// Used by LiteLLM and OpenAI clients for model discovery and health checks.
-func handleModels(modelName string) http.HandlerFunc {
-	// Pre-build the response since it's static
+func handleModels(cfg Config) http.HandlerFunc {
 	resp := map[string]any{
 		"object": "list",
-		"data": []map[string]any{
-			{
-				"id":       modelName,
-				"object":   "model",
-				"owned_by": "local",
-			},
-		},
+		"data": []map[string]any{{
+			"id":       cfg.ModelDir,
+			"object":   "model",
+			"owned_by": "local",
+		}},
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -63,18 +60,20 @@ func handleModels(modelName string) http.HandlerFunc {
 	}
 }
 
-func handleTranscription(rec *Recognizer) http.HandlerFunc {
+func handleTranscription(rec *Recognizer, cfg Config, sem chan struct{}, maxBodyBytes int64) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Request timeout
+		ctx, cancel := context.WithTimeout(r.Context(), cfg.RequestTimeout)
+		defer cancel()
+
 		// Extract W3C traceparent from upstream, or start a new trace
-		ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagatorCarrier(r.Header))
+		ctx = otel.GetTextMapPropagator().Extract(ctx, propagatorCarrier(r.Header))
 		ctx, span := tracer.Start(ctx, "transcribe",
 			trace.WithSpanKind(trace.SpanKindServer),
 		)
 		defer span.End()
 
 		start := time.Now()
-		requestsInProgress.Inc()
-		defer requestsInProgress.Dec()
 
 		// Propagate or generate request ID
 		reqID := r.Header.Get(requestIDHeader)
@@ -87,11 +86,29 @@ func handleTranscription(rec *Recognizer) http.HandlerFunc {
 		w.Header().Set(requestIDHeader, reqID)
 		span.SetAttributes(attribute.String("request.id", reqID))
 
-		// Inject trace context into response for downstream correlation
+		// Inject trace context into response
 		otel.GetTextMapPropagator().Inject(ctx, propagatorCarrier(w.Header()))
 
-		// Parse multipart form (max 100 MB)
-		if err := r.ParseMultipartForm(100 << 20); err != nil {
+		// Concurrency limit — reject with 503 if all slots full
+		select {
+		case sem <- struct{}{}:
+			defer func() { <-sem }()
+		default:
+			requestsTotal.WithLabelValues("503", "").Inc()
+			span.SetStatus(codes.Error, "too many requests")
+			httpError(w, r, ctx, reqID, http.StatusServiceUnavailable,
+				"server busy: %d concurrent requests in progress", cfg.MaxConcurrent)
+			return
+		}
+
+		requestsInProgress.Inc()
+		defer requestsInProgress.Dec()
+
+		// Limit request body size
+		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+
+		// Parse multipart form
+		if err := r.ParseMultipartForm(maxBodyBytes); err != nil {
 			requestsTotal.WithLabelValues("400", "").Inc()
 			span.SetStatus(codes.Error, "invalid multipart form")
 			httpError(w, r, ctx, reqID, http.StatusBadRequest, "invalid multipart form: %v", err)
@@ -109,9 +126,9 @@ func handleTranscription(rec *Recognizer) http.HandlerFunc {
 
 		audioData, err := io.ReadAll(file)
 		if err != nil {
-			requestsTotal.WithLabelValues("500", "").Inc()
+			requestsTotal.WithLabelValues("400", "").Inc()
 			span.SetStatus(codes.Error, "read file failed")
-			httpError(w, r, ctx, reqID, http.StatusInternalServerError, "failed to read file: %v", err)
+			httpError(w, r, ctx, reqID, http.StatusBadRequest, "file too large or read error: %v", err)
 			return
 		}
 
@@ -119,6 +136,14 @@ func handleTranscription(rec *Recognizer) http.HandlerFunc {
 			attribute.String("audio.filename", header.Filename),
 			attribute.Int("audio.size_bytes", len(audioData)),
 		)
+
+		// Check context before expensive operations
+		if ctx.Err() != nil {
+			requestsTotal.WithLabelValues("408", "").Inc()
+			span.SetStatus(codes.Error, "request timeout")
+			httpError(w, r, ctx, reqID, http.StatusRequestTimeout, "request timed out")
+			return
+		}
 
 		// Convert to 16kHz mono PCM via ffmpeg
 		_, decodeSpan := tracer.Start(ctx, "audio.decode")
@@ -135,9 +160,26 @@ func handleTranscription(rec *Recognizer) http.HandlerFunc {
 		}
 		decodeDuration.Observe(decodeElapsed.Seconds())
 
+		// Enforce max audio duration
+		audioDur := float32(len(samples)) / float32(sampleRate)
+		if audioDur > float32(cfg.MaxAudioDuration.Seconds()) {
+			requestsTotal.WithLabelValues("413", "").Inc()
+			span.SetStatus(codes.Error, "audio too long")
+			httpError(w, r, ctx, reqID, http.StatusRequestEntityTooLarge,
+				"audio duration %.0fs exceeds limit of %ds", audioDur, int(cfg.MaxAudioDuration.Seconds()))
+			return
+		}
+
+		// Check context before inference
+		if ctx.Err() != nil {
+			requestsTotal.WithLabelValues("408", "").Inc()
+			span.SetStatus(codes.Error, "request timeout")
+			httpError(w, r, ctx, reqID, http.StatusRequestTimeout, "request timed out before inference")
+			return
+		}
+
 		// Inference
-		inferCtx, inferSpan := tracer.Start(ctx, "model.inference")
-		_ = inferCtx
+		_, inferSpan := tracer.Start(ctx, "model.inference")
 		result := rec.Transcribe(samples, sampleRate)
 		inferSpan.End()
 
@@ -163,7 +205,7 @@ func handleTranscription(rec *Recognizer) http.HandlerFunc {
 		audioDuration.Observe(float64(result.Duration))
 		audioBytesTotal.Add(float64(len(audioData)))
 
-		// Log with trace context for journalctl ↔ trace correlation
+		// Log with trace context
 		logAttrs := append([]any{
 			"request_id", reqID,
 			"file", header.Filename,
@@ -183,7 +225,6 @@ func handleTranscription(rec *Recognizer) http.HandlerFunc {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			fmt.Fprint(w, result.Text)
 		case "verbose_json":
-			// LiteLLM forces this format for cost calculation — needs duration field
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]any{
 				"text":     result.Text,
@@ -191,7 +232,6 @@ func handleTranscription(rec *Recognizer) http.HandlerFunc {
 				"duration": result.Duration,
 			})
 		default:
-			// json (default)
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]string{
 				"text": result.Text,
@@ -225,8 +265,8 @@ func httpError(w http.ResponseWriter, r *http.Request, ctx context.Context, reqI
 // propagatorCarrier adapts http.Header for OTel text map propagation.
 type propagatorCarrier http.Header
 
-func (c propagatorCarrier) Get(key string) string          { return http.Header(c).Get(key) }
-func (c propagatorCarrier) Set(key, value string)          { http.Header(c).Set(key, value) }
+func (c propagatorCarrier) Get(key string) string { return http.Header(c).Get(key) }
+func (c propagatorCarrier) Set(key, value string) { http.Header(c).Set(key, value) }
 func (c propagatorCarrier) Keys() []string {
 	keys := make([]string, 0, len(c))
 	for k := range c {

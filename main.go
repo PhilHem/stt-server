@@ -5,20 +5,29 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
+	"syscall"
+	"time"
 )
 
 type Config struct {
-	ModelDir   string
-	Port       int
-	NumThreads int
-	Provider   string // "cpu" or "cuda"
+	ModelDir          string
+	Port              int
+	NumThreads        int
+	Provider          string // "cpu" or "cuda"
+	MaxConcurrent     int
+	MaxFileSizeMB     int
+	MaxAudioDuration  time.Duration
+	RequestTimeout    time.Duration
 }
 
 func main() {
 	var model, cacheDir, logFormat, logLevel, otelEndpoint string
+	var maxAudioSec, requestTimeoutSec int
 	cfg := Config{}
 
 	flag.StringVar(&model, "model", envOr("STT_MODEL", ""), "Model name or path (env: STT_MODEL)")
@@ -28,8 +37,15 @@ func main() {
 	flag.StringVar(&cfg.Provider, "provider", envOr("STT_PROVIDER", "cpu"), "ONNX Runtime provider: cpu or cuda (env: STT_PROVIDER)")
 	flag.StringVar(&logFormat, "log-format", envOr("STT_LOG_FORMAT", "text"), "Log format: text, json, or journal (env: STT_LOG_FORMAT)")
 	flag.StringVar(&logLevel, "log-level", envOr("STT_LOG_LEVEL", "info"), "Log level: debug, info, warn, error (env: STT_LOG_LEVEL)")
-	flag.StringVar(&otelEndpoint, "otel-endpoint", envOr("OTEL_EXPORTER_OTLP_ENDPOINT", ""), "OTLP gRPC endpoint for traces, e.g. localhost:4317 (env: OTEL_EXPORTER_OTLP_ENDPOINT)")
+	flag.StringVar(&otelEndpoint, "otel-endpoint", envOr("OTEL_EXPORTER_OTLP_ENDPOINT", ""), "OTLP gRPC endpoint for traces (env: OTEL_EXPORTER_OTLP_ENDPOINT)")
+	flag.IntVar(&cfg.MaxConcurrent, "max-concurrent", envInt("STT_MAX_CONCURRENT", 4), "Max concurrent transcription requests (env: STT_MAX_CONCURRENT)")
+	flag.IntVar(&cfg.MaxFileSizeMB, "max-file-size", envInt("STT_MAX_FILE_SIZE_MB", 100), "Max upload file size in MB (env: STT_MAX_FILE_SIZE_MB)")
+	flag.IntVar(&maxAudioSec, "max-audio-duration", envInt("STT_MAX_AUDIO_DURATION", 600), "Max audio duration in seconds (env: STT_MAX_AUDIO_DURATION)")
+	flag.IntVar(&requestTimeoutSec, "request-timeout", envInt("STT_REQUEST_TIMEOUT", 300), "Request timeout in seconds (env: STT_REQUEST_TIMEOUT)")
 	flag.Parse()
+
+	cfg.MaxAudioDuration = time.Duration(maxAudioSec) * time.Second
+	cfg.RequestTimeout = time.Duration(requestTimeoutSec) * time.Second
 
 	if err := setupLogging(logFormat, logLevel); err != nil {
 		slog.Error("invalid logging config", "error", err)
@@ -75,12 +91,32 @@ func main() {
 		"path", cfg.ModelDir,
 		"threads", cfg.NumThreads,
 		"provider", cfg.Provider,
+		"max_concurrent", cfg.MaxConcurrent,
+		"max_file_size_mb", cfg.MaxFileSizeMB,
+		"max_audio_duration_s", int(cfg.MaxAudioDuration.Seconds()),
+		"request_timeout_s", int(cfg.RequestTimeout.Seconds()),
 	)
 
-	srv := newServer(recognizer, cfg.Port, filepath.Base(cfg.ModelDir))
+	srv := newServer(recognizer, cfg)
+
+	// Graceful shutdown: drain in-flight requests on SIGTERM/SIGINT
+	shutdownCtx, stop := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	go func() {
+		<-shutdownCtx.Done()
+		slog.Info("shutting down, draining in-flight requests...")
+		drainCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(drainCtx); err != nil {
+			slog.Error("shutdown error", "error", err)
+		}
+	}()
+
 	slog.Info("listening", "port", cfg.Port)
-	if err := srv.ListenAndServe(); err != nil {
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		slog.Error("server stopped", "error", err)
 		os.Exit(1)
 	}
+	slog.Info("server stopped gracefully")
 }
