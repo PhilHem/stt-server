@@ -1,61 +1,48 @@
 package main
 
 import (
-	"fmt"
+	"flag"
 	"log"
 	"os"
-	"strings"
-
-	sherpa "github.com/k2-fsa/sherpa-onnx-go/sherpa_onnx"
+	"runtime"
 )
 
-const modelDir = "models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"
+type Config struct {
+	ModelDir   string
+	Port       int
+	NumThreads int
+	Provider   string // "cpu" or "cuda"
+}
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Fprintf(os.Stderr, "Usage: %s <audio.wav>\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "\nTranscribe a 16kHz mono WAV file using Parakeet V3.\n")
-		fmt.Fprintf(os.Stderr, "Download the model first: ./download-model.sh\n")
-		os.Exit(1)
+	cfg := Config{}
+
+	flag.StringVar(&cfg.ModelDir, "model", envOr("STT_MODEL", ""), "Path to sherpa-onnx model directory (env: STT_MODEL)")
+	flag.IntVar(&cfg.Port, "port", envInt("STT_PORT", 8000), "HTTP listen port (env: STT_PORT)")
+	flag.IntVar(&cfg.NumThreads, "num-threads", envInt("STT_NUM_THREADS", runtime.NumCPU()), "Inference threads (env: STT_NUM_THREADS)")
+	flag.StringVar(&cfg.Provider, "provider", envOr("STT_PROVIDER", "cpu"), "ONNX Runtime provider: cpu or cuda (env: STT_PROVIDER)")
+	flag.Parse()
+
+	if cfg.ModelDir == "" {
+		log.Fatal("--model or STT_MODEL is required")
 	}
 
-	wavPath := os.Args[1]
-
-	config := sherpa.OfflineRecognizerConfig{}
-	config.ModelConfig.Transducer.Encoder = modelDir + "/encoder.int8.onnx"
-	config.ModelConfig.Transducer.Decoder = modelDir + "/decoder.int8.onnx"
-	config.ModelConfig.Transducer.Joiner = modelDir + "/joiner.int8.onnx"
-	config.ModelConfig.Tokens = modelDir + "/tokens.txt"
-	config.ModelConfig.NumThreads = 4
-	config.ModelConfig.Provider = "cpu"
-	config.ModelConfig.ModelType = "nemo_transducer"
-	config.FeatConfig.SampleRate = 16000
-	config.FeatConfig.FeatureDim = 80
-	config.DecodingMethod = "greedy_search"
-
-	log.Println("Loading model...")
-	recognizer := sherpa.NewOfflineRecognizer(&config)
-	if recognizer == nil {
-		log.Fatal("Failed to create recognizer. Are model files present?")
+	// Verify model directory exists
+	if _, err := os.Stat(cfg.ModelDir); os.IsNotExist(err) {
+		log.Fatalf("Model directory not found: %s", cfg.ModelDir)
 	}
-	defer sherpa.DeleteOfflineRecognizer(recognizer)
-	log.Println("Model loaded.")
 
-	log.Printf("Transcribing %s ...", wavPath)
-	samples, sampleRate := readWave(wavPath)
-
-	stream := sherpa.NewOfflineStream(recognizer)
-	defer sherpa.DeleteOfflineStream(stream)
-
-	stream.AcceptWaveform(sampleRate, samples)
-	recognizer.Decode(stream)
-
-	result := stream.GetResult()
-
-	fmt.Println()
-	fmt.Println(strings.TrimSpace(result.Text))
-	if result.Lang != "" {
-		log.Printf("Language: %s", result.Lang)
+	recognizer, err := newRecognizer(cfg)
+	if err != nil {
+		log.Fatalf("Failed to load model: %v", err)
 	}
-	log.Printf("Duration: %.1fs", float32(len(samples))/float32(sampleRate))
+	defer recognizer.Close()
+
+	log.Printf("Model loaded from %s (%d threads, provider=%s)", cfg.ModelDir, cfg.NumThreads, cfg.Provider)
+
+	srv := newServer(recognizer, cfg.Port)
+	log.Printf("Listening on :%d", cfg.Port)
+	if err := srv.ListenAndServe(); err != nil {
+		log.Fatal(err)
+	}
 }
