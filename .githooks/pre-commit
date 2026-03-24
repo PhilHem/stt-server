@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "pre-commit: checking dependency direction..."
+./scripts/check-deps.sh
+
+echo "pre-commit: running tests..."
+go test ./... -count=1 -short 2>&1 | tail -10
+
+echo "pre-commit: building..."
+go build ./cmd/stt-server/ 2>&1
