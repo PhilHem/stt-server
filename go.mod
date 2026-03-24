@@ -1,6 +1,6 @@
 module github.com/PhilHem/stt-server
 
-go 1.25.0
+go 1.24.0
 
 require github.com/k2-fsa/sherpa-onnx-go v1.12.30
 
