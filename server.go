@@ -37,8 +37,9 @@ func newServer(rec *Recognizer, cfg Config) *http.Server {
 		Addr:              fmt.Sprintf(":%d", cfg.Port),
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       cfg.RequestTimeout + 10*time.Second, // slightly more than request timeout
+		ReadTimeout:       cfg.RequestTimeout + 10*time.Second,
 		WriteTimeout:      cfg.RequestTimeout + 10*time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 }
 
@@ -114,7 +115,8 @@ func handleTranscription(rec *Recognizer, cfg Config, sem chan struct{}, maxBody
 		if err := r.ParseMultipartForm(maxBodyBytes); err != nil {
 			requestsTotal.WithLabelValues("400", "").Inc()
 			span.SetStatus(codes.Error, "invalid multipart form")
-			httpError(w, r, ctx, reqID, http.StatusBadRequest, "invalid multipart form: %v", err)
+			slog.Debug("multipart parse failed", "error", err)
+			httpError(w, r, ctx, reqID, http.StatusBadRequest, "invalid request body")
 			return
 		}
 		if r.MultipartForm != nil {
@@ -125,7 +127,7 @@ func handleTranscription(rec *Recognizer, cfg Config, sem chan struct{}, maxBody
 		if err != nil {
 			requestsTotal.WithLabelValues("400", "").Inc()
 			span.SetStatus(codes.Error, "missing file field")
-			httpError(w, r, ctx, reqID, http.StatusBadRequest, "missing 'file' field: %v", err)
+			httpError(w, r, ctx, reqID, http.StatusBadRequest, "missing 'file' field")
 			return
 		}
 		defer file.Close()
@@ -134,12 +136,14 @@ func handleTranscription(rec *Recognizer, cfg Config, sem chan struct{}, maxBody
 		if err != nil {
 			requestsTotal.WithLabelValues("400", "").Inc()
 			span.SetStatus(codes.Error, "read file failed")
-			httpError(w, r, ctx, reqID, http.StatusBadRequest, "file too large or read error: %v", err)
+			slog.Debug("file read failed", "error", err)
+			httpError(w, r, ctx, reqID, http.StatusBadRequest, "file too large or unreadable")
 			return
 		}
 
+		safeFilename := sanitizeRequestID(header.Filename) // reuse same sanitizer
 		span.SetAttributes(
-			attribute.String("audio.filename", header.Filename),
+			attribute.String("audio.filename", safeFilename),
 			attribute.Int("audio.size_bytes", len(audioData)),
 		)
 
@@ -176,7 +180,8 @@ func handleTranscription(rec *Recognizer, cfg Config, sem chan struct{}, maxBody
 		if err != nil {
 			requestsTotal.WithLabelValues("408", "").Inc()
 			span.SetStatus(codes.Error, "inference failed")
-			httpError(w, r, ctx, reqID, http.StatusRequestTimeout, "transcription failed: %v", err)
+			slog.Debug("transcription failed", "error", err)
+			httpError(w, r, ctx, reqID, http.StatusRequestTimeout, "transcription timed out")
 			return
 		}
 
@@ -205,7 +210,7 @@ func handleTranscription(rec *Recognizer, cfg Config, sem chan struct{}, maxBody
 		// Log with trace context
 		logAttrs := append([]any{
 			"request_id", reqID,
-			"file", header.Filename,
+			"file", safeFilename,
 			"size_bytes", len(audioData),
 			"duration_s", fmt.Sprintf("%.1f", result.Duration),
 			"elapsed_ms", elapsed.Milliseconds(),

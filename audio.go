@@ -82,8 +82,8 @@ func decodeAudio(ctx context.Context, data []byte, filename string) ([]float32, 
 		return nil, 0, fmt.Errorf("audio decode failed")
 	}
 
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	stderr := &limitedBuffer{max: 64 * 1024} // 64 KB cap for error output
+	cmd.Stderr = stderr
 
 	if err := cmd.Start(); err != nil {
 		slog.Debug("ffmpeg start failed", "error", err)
@@ -107,8 +107,7 @@ func decodeAudio(ctx context.Context, data []byte, filename string) ([]float32, 
 	}
 
 	if err := cmd.Wait(); err != nil {
-		errMsg := stderr.String()
-		slog.Debug("ffmpeg failed", "error", err, "stderr", errMsg)
+		slog.Debug("ffmpeg failed", "error", err, "stderr", stderr.buf.String())
 		return nil, 0, fmt.Errorf("audio decode failed")
 	}
 
@@ -118,6 +117,25 @@ func decodeAudio(ctx context.Context, data []byte, filename string) ([]float32, 
 
 	samples := pcmToFloat32(raw)
 	return samples, targetSampleRate, nil
+}
+
+// limitedBuffer is a writer that silently discards data after max bytes.
+// Used to cap ffmpeg stderr so malformed audio can't cause unbounded memory growth.
+type limitedBuffer struct {
+	buf bytes.Buffer
+	max int
+}
+
+func (w *limitedBuffer) Write(p []byte) (int, error) {
+	remaining := w.max - w.buf.Len()
+	if remaining <= 0 {
+		return len(p), nil // discard, report success to avoid EPIPE
+	}
+	if len(p) > remaining {
+		p = p[:remaining]
+	}
+	w.buf.Write(p)
+	return len(p), nil
 }
 
 // pcmToFloat32 converts raw 16-bit little-endian PCM bytes to float32 samples.

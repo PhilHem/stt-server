@@ -13,9 +13,12 @@ import (
 )
 
 // Recognizer wraps sherpa-onnx offline recognition with mutex serialization.
+// A WaitGroup tracks in-flight inference goroutines so Close() can wait
+// for them before destroying the C object (prevents use-after-free).
 type Recognizer struct {
 	inner *sherpa.OfflineRecognizer
 	mu    sync.Mutex
+	wg    sync.WaitGroup
 }
 
 // TranscriptionResult holds the output of a transcription.
@@ -53,7 +56,9 @@ func (r *Recognizer) Transcribe(ctx context.Context, samples []float32, sampleRa
 	}
 	ch := make(chan result, 1)
 
+	r.wg.Add(1)
 	go func() {
+		defer r.wg.Done()
 		r.mu.Lock()
 		defer r.mu.Unlock()
 
@@ -84,6 +89,9 @@ func (r *Recognizer) Transcribe(ctx context.Context, samples []float32, sampleRa
 }
 
 func (r *Recognizer) Close() {
+	// Wait for all in-flight inference goroutines to finish before
+	// destroying the C object. Prevents use-after-free on shutdown.
+	r.wg.Wait()
 	sherpa.DeleteOfflineRecognizer(r.inner)
 }
 

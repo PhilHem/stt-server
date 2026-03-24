@@ -29,8 +29,9 @@ const (
 	minOnnxFileSize = 1 << 20 // 1 MB
 )
 
-// validModelName matches only safe model names: alphanumeric, dots, hyphens, underscores.
-var validModelName = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+// validModelName matches only safe model names: must start with alphanumeric,
+// then alphanumeric/dots/hyphens/underscores. Rejects ".", "..", and similar.
+var validModelName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 
 // resolveModel takes a --model value and returns the path to a local model directory.
 // If the value is an existing directory, it's returned as-is.
@@ -73,6 +74,7 @@ func resolveModel(model, cacheDir string) (string, error) {
 	slog.Info("downloading model", "model", model, "url", url)
 
 	if err := downloadAndExtract(url, cacheDir); err != nil {
+		os.RemoveAll(modelDir) // clean up partial extraction
 		return "", fmt.Errorf("download model %s: %w", model, err)
 	}
 
