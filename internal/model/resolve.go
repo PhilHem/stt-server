@@ -1,4 +1,4 @@
-package main
+package model
 
 import (
 	"archive/tar"
@@ -33,18 +33,18 @@ const (
 // then alphanumeric/dots/hyphens/underscores. Rejects ".", "..", and similar.
 var validModelName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 
-// resolveModel takes a --model value and returns the path to a local model directory.
+// Resolve takes a --model value and returns the path to a local model directory.
 // If the value is an existing directory, it's returned as-is.
 // Otherwise, it's treated as a model name and downloaded to the cache directory.
-func resolveModel(model, cacheDir string) (string, error) {
+func Resolve(modelName, cacheDir string) (string, error) {
 	// Already a local directory?
-	if info, err := os.Stat(model); err == nil && info.IsDir() {
-		return model, nil
+	if info, err := os.Stat(modelName); err == nil && info.IsDir() {
+		return modelName, nil
 	}
 
-	// H5: Validate model name before using it in URL construction.
-	if !validModelName.MatchString(model) {
-		return "", fmt.Errorf("invalid model name %q: must contain only alphanumeric characters, dots, hyphens, and underscores", model)
+	// Validate model name before using it in URL construction.
+	if !validModelName.MatchString(modelName) {
+		return "", fmt.Errorf("invalid model name %q: must contain only alphanumeric characters, dots, hyphens, and underscores", modelName)
 	}
 
 	// Treat as model name — resolve cache directory
@@ -61,7 +61,7 @@ func resolveModel(model, cacheDir string) (string, error) {
 		return "", fmt.Errorf("create cache dir: %w", err)
 	}
 
-	modelDir := filepath.Join(cacheDir, model)
+	modelDir := filepath.Join(cacheDir, modelName)
 
 	// Already cached?
 	if _, err := os.Stat(filepath.Join(modelDir, "tokens.txt")); err == nil {
@@ -70,19 +70,19 @@ func resolveModel(model, cacheDir string) (string, error) {
 	}
 
 	// Download from sherpa-onnx GitHub releases
-	url := fmt.Sprintf(sherpaReleaseURL, model)
-	slog.Info("downloading model", "model", model, "url", url)
+	url := fmt.Sprintf(sherpaReleaseURL, modelName)
+	slog.Info("downloading model", "model", modelName, "url", url)
 
 	if err := downloadAndExtract(url, cacheDir); err != nil {
 		os.RemoveAll(modelDir) // clean up partial extraction
-		return "", fmt.Errorf("download model %s: %w", model, err)
+		return "", fmt.Errorf("download model %s: %w", modelName, err)
 	}
 
-	// M4: Verify extraction produced expected files with reasonable sizes.
+	// Verify extraction produced expected files with reasonable sizes.
 	if err := verifyModelFiles(modelDir); err != nil {
 		// Clean up partial/invalid download
 		os.RemoveAll(modelDir)
-		return "", fmt.Errorf("model verification failed for %s: %w", model, err)
+		return "", fmt.Errorf("model verification failed for %s: %w", modelName, err)
 	}
 
 	slog.Info("model cached", "path", modelDir)
@@ -91,7 +91,7 @@ func resolveModel(model, cacheDir string) (string, error) {
 
 // downloadAndExtract fetches a .tar.bz2 URL and extracts it to destDir.
 func downloadAndExtract(url, destDir string) error {
-	// M6: Custom client with redirect limits, HTTPS enforcement, and timeout.
+	// Custom client with redirect limits, HTTPS enforcement, and timeout.
 	client := &http.Client{
 		Timeout: 10 * time.Minute,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -127,7 +127,7 @@ func extractTarBz2(r io.Reader, destDir string) error {
 	bzr := bzip2.NewReader(r)
 	tr := tar.NewReader(bzr)
 
-	// M3: Track total bytes extracted to prevent decompression bombs.
+	// Track total bytes extracted to prevent decompression bombs.
 	var totalBytes int64
 
 	for {
@@ -154,13 +154,13 @@ func extractTarBz2(r io.Reader, destDir string) error {
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}
-			// L4: Mask file mode to remove setuid/setgid/sticky bits.
+			// Mask file mode to remove setuid/setgid/sticky bits.
 			mode := os.FileMode(hdr.Mode) & 0o777
 			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 			if err != nil {
 				return err
 			}
-			// M3: Limit per-file size and track total extraction size.
+			// Limit per-file size and track total extraction size.
 			limited := &io.LimitedReader{R: tr, N: maxFileBytes}
 			written, err := io.Copy(f, limited)
 			f.Close()
@@ -175,7 +175,7 @@ func extractTarBz2(r io.Reader, destDir string) error {
 				return fmt.Errorf("extraction size limit exceeded")
 			}
 		default:
-			// L5: Log skipped entry types (symlinks, hardlinks, etc.) for visibility.
+			// Log skipped entry types (symlinks, hardlinks, etc.) for visibility.
 			slog.Debug("skipping tar entry with unsupported type", "name", hdr.Name, "typeflag", hdr.Typeflag)
 		}
 	}
@@ -184,7 +184,7 @@ func extractTarBz2(r io.Reader, destDir string) error {
 }
 
 // verifyModelFiles checks that a downloaded model directory contains expected files
-// with reasonable sizes. This provides basic integrity verification (M4).
+// with reasonable sizes.
 func verifyModelFiles(modelDir string) error {
 	// tokens.txt must exist and be non-empty.
 	tokensInfo, err := os.Stat(filepath.Join(modelDir, "tokens.txt"))
@@ -237,7 +237,7 @@ func verifyModelFiles(modelDir string) error {
 }
 
 // checkOnnxMagic verifies that a file starts with the ONNX protobuf header.
-// ONNX uses protobuf: field 1 (ir_version) as varint → first byte is 0x08.
+// ONNX uses protobuf: field 1 (ir_version) as varint -> first byte is 0x08.
 func checkOnnxMagic(path string) error {
 	f, err := os.Open(path)
 	if err != nil {

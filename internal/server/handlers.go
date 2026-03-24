@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"context"
@@ -7,48 +7,30 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/PhilHem/stt-server/internal/audio"
+	"github.com/PhilHem/stt-server/internal/config"
+	"github.com/PhilHem/stt-server/internal/observe"
+	"github.com/PhilHem/stt-server/internal/recognizer"
 )
 
 const requestIDHeader = "X-Request-ID"
 
 var tracer = otel.Tracer("stt-server")
 
-func newServer(rec *Recognizer, cfg Config) *http.Server {
-	sem := make(chan struct{}, cfg.MaxConcurrent)
-	maxBodyBytes := int64(cfg.MaxFileSizeMB) << 20
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", handleHealth)
-	mux.Handle("GET /metrics", promhttp.Handler())
-	mux.HandleFunc("GET /v1/models", handleModels(cfg))
-	mux.HandleFunc("POST /v1/audio/transcriptions", handleTranscription(rec, cfg, sem, maxBodyBytes))
-
-	return &http.Server{
-		Addr:              fmt.Sprintf(":%d", cfg.Port),
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       cfg.RequestTimeout + 10*time.Second,
-		WriteTimeout:      cfg.RequestTimeout + 10*time.Second,
-		IdleTimeout:       60 * time.Second,
-	}
-}
-
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
-func handleModels(cfg Config) http.HandlerFunc {
+func handleModels(cfg config.Config) http.HandlerFunc {
 	resp := map[string]any{
 		"object": "list",
 		"data": []map[string]any{{
@@ -63,14 +45,14 @@ func handleModels(cfg Config) http.HandlerFunc {
 	}
 }
 
-func handleTranscription(rec *Recognizer, cfg Config, sem chan struct{}, maxBodyBytes int64) http.HandlerFunc {
+func handleTranscription(rec *recognizer.Recognizer, cfg config.Config, m *observe.Metrics, sem chan struct{}, maxBodyBytes int64) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Concurrency limit FIRST — reject before allocating any resources
 		select {
 		case sem <- struct{}{}:
 			defer func() { <-sem }()
 		default:
-			requestsTotal.WithLabelValues("503", "").Inc()
+			m.RequestsTotal.WithLabelValues("503", "").Inc()
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusServiceUnavailable)
 			json.NewEncoder(w).Encode(map[string]any{
@@ -95,8 +77,8 @@ func handleTranscription(rec *Recognizer, cfg Config, sem chan struct{}, maxBody
 		defer span.End()
 
 		start := time.Now()
-		requestsInProgress.Inc()
-		defer requestsInProgress.Dec()
+		m.RequestsInProgress.Inc()
+		defer m.RequestsInProgress.Dec()
 
 		// Propagate or generate request ID
 		reqID := r.Header.Get(requestIDHeader)
@@ -118,10 +100,10 @@ func handleTranscription(rec *Recognizer, cfg Config, sem chan struct{}, maxBody
 
 		// Parse multipart form
 		if err := r.ParseMultipartForm(maxBodyBytes); err != nil {
-			requestsTotal.WithLabelValues("400", "").Inc()
+			m.RequestsTotal.WithLabelValues("400", "").Inc()
 			span.SetStatus(codes.Error, "invalid multipart form")
 			slog.Debug("multipart parse failed", "error", err)
-			httpError(w, r, ctx, reqID, http.StatusBadRequest, "invalid request body")
+			httpError(w, r, ctx, reqID, http.StatusBadRequest, observe.TraceAttrs, "invalid request body")
 			return
 		}
 		if r.MultipartForm != nil {
@@ -130,19 +112,19 @@ func handleTranscription(rec *Recognizer, cfg Config, sem chan struct{}, maxBody
 
 		file, header, err := r.FormFile("file")
 		if err != nil {
-			requestsTotal.WithLabelValues("400", "").Inc()
+			m.RequestsTotal.WithLabelValues("400", "").Inc()
 			span.SetStatus(codes.Error, "missing file field")
-			httpError(w, r, ctx, reqID, http.StatusBadRequest, "missing 'file' field")
+			httpError(w, r, ctx, reqID, http.StatusBadRequest, observe.TraceAttrs, "missing 'file' field")
 			return
 		}
 		defer file.Close()
 
 		audioData, err := io.ReadAll(file)
 		if err != nil {
-			requestsTotal.WithLabelValues("400", "").Inc()
+			m.RequestsTotal.WithLabelValues("400", "").Inc()
 			span.SetStatus(codes.Error, "read file failed")
 			slog.Debug("file read failed", "error", err)
-			httpError(w, r, ctx, reqID, http.StatusBadRequest, "file too large or unreadable")
+			httpError(w, r, ctx, reqID, http.StatusBadRequest, observe.TraceAttrs, "file too large or unreadable")
 			return
 		}
 
@@ -155,24 +137,24 @@ func handleTranscription(rec *Recognizer, cfg Config, sem chan struct{}, maxBody
 		// Convert to 16kHz mono PCM via ffmpeg
 		_, decodeSpan := tracer.Start(ctx, "audio.decode")
 		decodeStart := time.Now()
-		samples, sampleRate, err := decodeAudio(ctx, audioData, header.Filename)
+		samples, sampleRate, err := audio.Decode(ctx, audioData, header.Filename)
 		decodeElapsed := time.Since(decodeStart)
 		decodeSpan.End()
 
 		if err != nil {
-			requestsTotal.WithLabelValues("400", "").Inc()
+			m.RequestsTotal.WithLabelValues("400", "").Inc()
 			span.SetStatus(codes.Error, "audio decode failed")
-			httpError(w, r, ctx, reqID, http.StatusBadRequest, "audio decode failed: %v", err)
+			httpError(w, r, ctx, reqID, http.StatusBadRequest, observe.TraceAttrs, "audio decode failed: %v", err)
 			return
 		}
-		decodeDuration.Observe(decodeElapsed.Seconds())
+		m.DecodeDuration.Observe(decodeElapsed.Seconds())
 
 		// Enforce max audio duration
 		audioDur := float32(len(samples)) / float32(sampleRate)
 		if audioDur > float32(cfg.MaxAudioDuration.Seconds()) {
-			requestsTotal.WithLabelValues("413", "").Inc()
+			m.RequestsTotal.WithLabelValues("413", "").Inc()
 			span.SetStatus(codes.Error, "audio too long")
-			httpError(w, r, ctx, reqID, http.StatusRequestEntityTooLarge,
+			httpError(w, r, ctx, reqID, http.StatusRequestEntityTooLarge, observe.TraceAttrs,
 				"audio duration %.0fs exceeds limit of %ds", audioDur, int(cfg.MaxAudioDuration.Seconds()))
 			return
 		}
@@ -183,10 +165,10 @@ func handleTranscription(rec *Recognizer, cfg Config, sem chan struct{}, maxBody
 		inferSpan.End()
 
 		if err != nil {
-			requestsTotal.WithLabelValues("408", "").Inc()
+			m.RequestsTotal.WithLabelValues("408", "").Inc()
 			span.SetStatus(codes.Error, "inference failed")
 			slog.Debug("transcription failed", "error", err)
-			httpError(w, r, ctx, reqID, http.StatusRequestTimeout, "transcription timed out")
+			httpError(w, r, ctx, reqID, http.StatusRequestTimeout, observe.TraceAttrs, "transcription timed out")
 			return
 		}
 
@@ -206,11 +188,11 @@ func handleTranscription(rec *Recognizer, cfg Config, sem chan struct{}, maxBody
 		span.SetStatus(codes.Ok, "")
 
 		// Record metrics
-		requestsTotal.WithLabelValues("200", lang).Inc()
-		requestDuration.Observe(elapsed.Seconds())
-		inferenceDuration.Observe(result.InferenceTime.Seconds())
-		audioDuration.Observe(float64(result.Duration))
-		audioBytesTotal.Add(float64(len(audioData)))
+		m.RequestsTotal.WithLabelValues("200", lang).Inc()
+		m.RequestDuration.Observe(elapsed.Seconds())
+		m.InferenceDuration.Observe(result.InferenceTime.Seconds())
+		m.AudioDuration.Observe(float64(result.Duration))
+		m.AudioBytesTotal.Add(float64(len(audioData)))
 
 		// Log with trace context
 		logAttrs := append([]any{
@@ -222,7 +204,7 @@ func handleTranscription(rec *Recognizer, cfg Config, sem chan struct{}, maxBody
 			"decode_ms", decodeElapsed.Milliseconds(),
 			"inference_ms", result.InferenceTime.Milliseconds(),
 			"lang", lang,
-		}, traceAttrs(ctx)...)
+		}, observe.TraceAttrs(ctx)...)
 		slog.Info("transcribed", logAttrs...)
 
 		// Response format (OpenAI-compatible)
@@ -245,57 +227,4 @@ func handleTranscription(rec *Recognizer, cfg Config, sem chan struct{}, maxBody
 			})
 		}
 	}
-}
-
-func sanitizeRequestID(id string) string {
-	// Allow UUID chars plus common ID formats
-	var b strings.Builder
-	for _, r := range id {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
-			b.WriteRune(r)
-		}
-	}
-	s := b.String()
-	if len(s) > 128 {
-		s = s[:128]
-	}
-	if s == "" {
-		return uuid.NewString()
-	}
-	return s
-}
-
-func httpError(w http.ResponseWriter, r *http.Request, ctx context.Context, reqID string, code int, format string, args ...any) {
-	msg := fmt.Sprintf(format, args...)
-	logAttrs := append([]any{
-		"request_id", reqID,
-		"status", code,
-		"method", r.Method,
-		"path", r.URL.Path,
-		"error", msg,
-	}, traceAttrs(ctx)...)
-	slog.Warn("request error", logAttrs...)
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(map[string]any{
-		"error": map[string]any{
-			"message": msg,
-			"type":    "invalid_request_error",
-			"code":    strconv.Itoa(code),
-		},
-	})
-}
-
-// propagatorCarrier adapts http.Header for OTel text map propagation.
-type propagatorCarrier http.Header
-
-func (c propagatorCarrier) Get(key string) string { return http.Header(c).Get(key) }
-func (c propagatorCarrier) Set(key, value string) { http.Header(c).Set(key, value) }
-func (c propagatorCarrier) Keys() []string {
-	keys := make([]string, 0, len(c))
-	for k := range c {
-		keys = append(keys, k)
-	}
-	return keys
 }

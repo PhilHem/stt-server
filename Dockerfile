@@ -41,8 +41,9 @@ WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
 
-COPY *.go ./
-RUN CGO_ENABLED=1 go build -ldflags="-s -w" -o /stt-server .
+COPY cmd/ cmd/
+COPY internal/ internal/
+RUN CGO_ENABLED=1 go build -ldflags="-s -w" -o /stt-server ./cmd/stt-server/
 
 # Copy sherpa-onnx shared libraries from the Go module cache
 RUN cp $(go env GOMODCACHE)/github.com/k2-fsa/sherpa-onnx-go-linux@*/lib/x86_64-unknown-linux-gnu/*.so /usr/local/lib/ && \

@@ -1,4 +1,4 @@
-package main
+package audio
 
 import (
 	"math"
@@ -23,12 +23,12 @@ func TestPcmToFloat32(t *testing.T) {
 		t.Errorf("sample[0]: expected 0.0, got %f", samples[0])
 	}
 
-	// 32767 / 32767 ≈ 1.0
+	// 32767 / 32767 = 1.0
 	if math.Abs(float64(samples[1])-1.0) > 0.001 {
 		t.Errorf("sample[1]: expected ~1.0, got %f", samples[1])
 	}
 
-	// -32768 / 32767 ≈ -1.0
+	// -32768 / 32767 = -1.0
 	if math.Abs(float64(samples[2])+1.0) > 0.001 {
 		t.Errorf("sample[2]: expected ~-1.0, got %f", samples[2])
 	}

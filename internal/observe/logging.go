@@ -1,4 +1,4 @@
-package main
+package observe
 
 import (
 	"fmt"
@@ -9,12 +9,12 @@ import (
 	slogjournal "github.com/systemd/slog-journal"
 )
 
-// setupLogging configures the global slog logger.
+// SetupLogging configures the global slog logger.
 //
 //	text    — human-readable key=value to stderr (default)
 //	json    — structured JSON to stderr (for Loki/Promtail/ELK)
 //	journal — native systemd journal protocol with first-class fields
-func setupLogging(format, level string) error {
+func SetupLogging(format, level string) error {
 	lvl, err := parseLevel(level)
 	if err != nil {
 		return err

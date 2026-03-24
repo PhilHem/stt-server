@@ -1,4 +1,4 @@
-package main
+package observe
 
 import (
 	"context"
@@ -14,9 +14,9 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// setupTracing initializes OpenTelemetry with OTLP gRPC exporter.
+// SetupTracing initializes OpenTelemetry with OTLP gRPC exporter.
 // Returns a shutdown function. If endpoint is empty, tracing is disabled (noop).
-func setupTracing(ctx context.Context, endpoint, serviceName string) (func(context.Context) error, error) {
+func SetupTracing(ctx context.Context, endpoint, serviceName string) (func(context.Context) error, error) {
 	if endpoint == "" {
 		// Noop — no overhead when disabled
 		return func(context.Context) error { return nil }, nil
@@ -51,9 +51,9 @@ func setupTracing(ctx context.Context, endpoint, serviceName string) (func(conte
 	return tp.Shutdown, nil
 }
 
-// traceAttrs returns slog attributes for the current span's trace_id and span_id.
+// TraceAttrs returns slog attributes for the current span's trace_id and span_id.
 // Returns nil if no active span.
-func traceAttrs(ctx context.Context) []any {
+func TraceAttrs(ctx context.Context) []any {
 	span := trace.SpanFromContext(ctx)
 	sc := span.SpanContext()
 	if !sc.IsValid() {

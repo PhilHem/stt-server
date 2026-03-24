@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"bytes"
@@ -9,15 +9,19 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/PhilHem/stt-server/internal/config"
+	"github.com/PhilHem/stt-server/internal/observe"
 )
 
-var testCfg = Config{
+var testCfg = config.Config{
 	MaxConcurrent:    4,
 	MaxFileSizeMB:    100,
 	MaxAudioDuration: 600 * time.Second,
 	RequestTimeout:   300 * time.Second,
 }
 
+var testMetrics = observe.NewMetrics()
 var testSem = make(chan struct{}, testCfg.MaxConcurrent)
 var testMaxBody = int64(testCfg.MaxFileSizeMB) << 20
 
@@ -49,7 +53,7 @@ func TestTranscriptionEndpoint_MissingFile(t *testing.T) {
 
 	w := httptest.NewRecorder()
 
-	handler := handleTranscription(nil, testCfg, testSem, testMaxBody)
+	handler := handleTranscription(nil, testCfg, testMetrics, testSem, testMaxBody)
 	handler(w, req)
 
 	resp := w.Result()
@@ -79,7 +83,7 @@ func TestRequestID_Generated(t *testing.T) {
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
 	w := httptest.NewRecorder()
-	handler := handleTranscription(nil, testCfg, testSem, testMaxBody)
+	handler := handleTranscription(nil, testCfg, testMetrics, testSem, testMaxBody)
 	handler(w, req)
 
 	reqID := w.Header().Get("X-Request-ID")
@@ -101,7 +105,7 @@ func TestRequestID_Propagated(t *testing.T) {
 	req.Header.Set("X-Request-ID", "upstream-id-123")
 
 	w := httptest.NewRecorder()
-	handler := handleTranscription(nil, testCfg, testSem, testMaxBody)
+	handler := handleTranscription(nil, testCfg, testMetrics, testSem, testMaxBody)
 	handler(w, req)
 
 	reqID := w.Header().Get("X-Request-ID")
@@ -120,7 +124,7 @@ func TestRequestID_LiteLLMCallID(t *testing.T) {
 	req.Header.Set("X-Litellm-Call-Id", "litellm-call-456")
 
 	w := httptest.NewRecorder()
-	handler := handleTranscription(nil, testCfg, testSem, testMaxBody)
+	handler := handleTranscription(nil, testCfg, testMetrics, testSem, testMaxBody)
 	handler(w, req)
 
 	reqID := w.Header().Get("X-Request-ID")
@@ -144,7 +148,7 @@ func TestConcurrencyLimit(t *testing.T) {
 	w := httptest.NewRecorder()
 	cfg := testCfg
 	cfg.MaxConcurrent = 1
-	handler := handleTranscription(nil, cfg, fullSem, testMaxBody)
+	handler := handleTranscription(nil, cfg, testMetrics, fullSem, testMaxBody)
 	handler(w, req)
 
 	resp := w.Result()

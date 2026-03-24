@@ -1,4 +1,4 @@
-package main
+package observe
 
 import (
 	"bytes"
@@ -9,8 +9,8 @@ import (
 )
 
 func TestSetupLogging_TextFormat(t *testing.T) {
-	if err := setupLogging("text", "info"); err != nil {
-		t.Fatalf("setupLogging(text, info): %v", err)
+	if err := SetupLogging("text", "info"); err != nil {
+		t.Fatalf("SetupLogging(text, info): %v", err)
 	}
 
 	var buf bytes.Buffer
@@ -57,7 +57,7 @@ func TestSetupLogging_JSONFormat(t *testing.T) {
 
 func TestSetupLogging_JournalFormat_NoSocket(t *testing.T) {
 	// On macOS / CI without journald, journal mode should return an error
-	err := setupLogging("journal", "info")
+	err := SetupLogging("journal", "info")
 	if err == nil {
 		// If it succeeded, we're on a system with journald — that's fine
 		t.Log("journal handler created (journald available)")
@@ -70,13 +70,13 @@ func TestSetupLogging_JournalFormat_NoSocket(t *testing.T) {
 }
 
 func TestSetupLogging_InvalidFormat(t *testing.T) {
-	if err := setupLogging("yaml", "info"); err == nil {
+	if err := SetupLogging("yaml", "info"); err == nil {
 		t.Error("expected error for invalid format 'yaml'")
 	}
 }
 
 func TestSetupLogging_InvalidLevel(t *testing.T) {
-	if err := setupLogging("text", "verbose"); err == nil {
+	if err := SetupLogging("text", "verbose"); err == nil {
 		t.Error("expected error for invalid level 'verbose'")
 	}
 }
@@ -84,8 +84,8 @@ func TestSetupLogging_InvalidLevel(t *testing.T) {
 func TestSetupLogging_AllLevels(t *testing.T) {
 	for _, level := range []string{"debug", "info", "warn", "error"} {
 		for _, format := range []string{"text", "json"} {
-			if err := setupLogging(format, level); err != nil {
-				t.Errorf("setupLogging(%s, %s): %v", format, level, err)
+			if err := SetupLogging(format, level); err != nil {
+				t.Errorf("SetupLogging(%s, %s): %v", format, level, err)
 			}
 		}
 	}

@@ -1,4 +1,4 @@
-package main
+package audio
 
 import (
 	"bytes"
@@ -11,7 +11,8 @@ import (
 	"os/exec"
 )
 
-const targetSampleRate = 16000
+// TargetSampleRate is the sample rate used for all decoded audio.
+const TargetSampleRate = 16000
 
 // maxDecodedBytes caps ffmpeg output to prevent memory bombs from compressed audio.
 // 600s * 16kHz * 2 bytes/sample = 19.2 MB; use 25 MB with headroom.
@@ -32,8 +33,8 @@ var audioMagic = []struct {
 	{4, []byte("ftyp"), "m4a/mp4"},
 }
 
-// isKnownAudioFormat checks the first bytes of data for recognized audio signatures.
-func isKnownAudioFormat(data []byte) bool {
+// IsKnownFormat checks the first bytes of data for recognized audio signatures.
+func IsKnownFormat(data []byte) bool {
 	// Check structured magic bytes
 	for _, m := range audioMagic {
 		end := m.offset + len(m.magic)
@@ -71,9 +72,9 @@ func isKnownAudioFormat(data []byte) bool {
 	return false
 }
 
-// decodeAudio converts any audio format to 16kHz mono float32 PCM via ffmpeg.
-func decodeAudio(ctx context.Context, data []byte, filename string) ([]float32, int, error) {
-	if !isKnownAudioFormat(data) {
+// Decode converts any audio format to 16kHz mono float32 PCM via ffmpeg.
+func Decode(ctx context.Context, data []byte, filename string) ([]float32, int, error) {
+	if !IsKnownFormat(data) {
 		return nil, 0, fmt.Errorf("unsupported audio format")
 	}
 
@@ -128,7 +129,7 @@ func decodeAudio(ctx context.Context, data []byte, filename string) ([]float32, 
 	}
 
 	samples := pcmToFloat32(raw)
-	return samples, targetSampleRate, nil
+	return samples, TargetSampleRate, nil
 }
 
 // limitedBuffer is a writer that silently discards data after max bytes.
