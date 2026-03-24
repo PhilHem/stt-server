@@ -1,0 +1,16 @@
+model_list:
+  - model_name: "parakeet-v3"
+    litellm_params:
+      model: "openai/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"
+      api_base: "http://stt-server:8000/v1"
+      api_key: "dummy"
+    model_info:
+      mode: audio_transcription
+
+general_settings:
+  master_key: "sk-test-key"
+
+litellm_settings:
+  drop_params: true
+  callbacks:
+    - prometheus

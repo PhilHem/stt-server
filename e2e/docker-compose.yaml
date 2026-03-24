@@ -1,0 +1,45 @@
+services:
+  stt-server:
+    image: stt-server:e2e
+    platform: linux/amd64
+    volumes:
+      - ../models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8:/model:ro
+    environment:
+      STT_MODEL: /model
+      STT_LOG_FORMAT: json
+      OTEL_EXPORTER_OTLP_ENDPOINT: victoria-traces:4317
+    ports:
+      - "8070:8000"
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    platform: linux/amd64
+    volumes:
+      - ./litellm-config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml"]
+    environment:
+      LITELLM_MASTER_KEY: sk-test-key
+    ports:
+      - "4000:4000"
+    depends_on:
+      - stt-server
+
+  victoria-metrics:
+    image: victoriametrics/victoria-metrics:latest
+    volumes:
+      - ./scrape.yaml:/etc/victoriametrics/scrape.yaml:ro
+    command:
+      - -promscrape.config=/etc/victoriametrics/scrape.yaml
+      - -retentionPeriod=1d
+    ports:
+      - "8428:8428"
+
+  victoria-traces:
+    image: victoriametrics/victoria-traces:latest
+    command:
+      - -otlpGRPCListenAddr=:4317
+      - -otlpGRPC.tls=false
+      - -httpListenAddr=:16686
+    ports:
+      - "4317:4317"   # OTLP gRPC (insecure, internal only)
+      - "16686:16686" # HTTP API (Jaeger-compat + OTLP HTTP)
