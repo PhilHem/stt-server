@@ -22,11 +22,12 @@ const requestIDHeader = "X-Request-ID"
 
 var tracer = otel.Tracer("stt-server")
 
-func newServer(rec *Recognizer, port int) *http.Server {
+func newServer(rec *Recognizer, port int, modelName string) *http.Server {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", handleHealth)
 	mux.Handle("GET /metrics", promhttp.Handler())
+	mux.HandleFunc("GET /v1/models", handleModels(modelName))
 	mux.HandleFunc("POST /v1/audio/transcriptions", handleTranscription(rec))
 
 	return &http.Server{
@@ -40,6 +41,26 @@ func newServer(rec *Recognizer, port int) *http.Server {
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// handleModels returns an OpenAI-compatible /v1/models response.
+// Used by LiteLLM and OpenAI clients for model discovery and health checks.
+func handleModels(modelName string) http.HandlerFunc {
+	// Pre-build the response since it's static
+	resp := map[string]any{
+		"object": "list",
+		"data": []map[string]any{
+			{
+				"id":       modelName,
+				"object":   "model",
+				"owned_by": "local",
+			},
+		},
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}
 }
 
 func handleTranscription(rec *Recognizer) http.HandlerFunc {
@@ -157,17 +178,25 @@ func handleTranscription(rec *Recognizer) http.HandlerFunc {
 
 		// Response format (OpenAI-compatible)
 		responseFormat := r.FormValue("response_format")
-		if responseFormat == "text" {
+		switch responseFormat {
+		case "text":
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			fmt.Fprint(w, result.Text)
-			return
+		case "verbose_json":
+			// LiteLLM forces this format for cost calculation — needs duration field
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"text":     result.Text,
+				"language": lang,
+				"duration": result.Duration,
+			})
+		default:
+			// json (default)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{
+				"text": result.Text,
+			})
 		}
-
-		// Default: JSON
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{
-			"text": result.Text,
-		})
 	}
 }
 

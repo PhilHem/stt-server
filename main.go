@@ -77,7 +77,7 @@ func main() {
 		"provider", cfg.Provider,
 	)
 
-	srv := newServer(recognizer, cfg.Port)
+	srv := newServer(recognizer, cfg.Port, filepath.Base(cfg.ModelDir))
 	slog.Info("listening", "port", cfg.Port)
 	if err := srv.ListenAndServe(); err != nil {
 		slog.Error("server stopped", "error", err)
