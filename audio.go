@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"os/exec"
+	"strings"
 )
 
 const targetSampleRate = 16000
@@ -30,7 +31,9 @@ func decodeAudio(data []byte, filename string) ([]float32, int, error) {
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return nil, 0, fmt.Errorf("ffmpeg: %v: %s", err, stderr.String())
+		// Collapse ffmpeg's multi-line stderr into a single line for clean logging
+		errMsg := strings.ReplaceAll(strings.TrimSpace(stderr.String()), "\n", " | ")
+		return nil, 0, fmt.Errorf("ffmpeg: %v: %s", err, errMsg)
 	}
 
 	raw := stdout.Bytes()

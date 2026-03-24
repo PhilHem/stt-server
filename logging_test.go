@@ -55,6 +55,20 @@ func TestSetupLogging_JSONFormat(t *testing.T) {
 	}
 }
 
+func TestSetupLogging_JournalFormat_NoSocket(t *testing.T) {
+	// On macOS / CI without journald, journal mode should return an error
+	err := setupLogging("journal", "info")
+	if err == nil {
+		// If it succeeded, we're on a system with journald — that's fine
+		t.Log("journal handler created (journald available)")
+		return
+	}
+	// Error should mention journald
+	if !strings.Contains(err.Error(), "journal") {
+		t.Errorf("expected journal-related error, got: %v", err)
+	}
+}
+
 func TestSetupLogging_InvalidFormat(t *testing.T) {
 	if err := setupLogging("yaml", "info"); err == nil {
 		t.Error("expected error for invalid format 'yaml'")
@@ -69,8 +83,10 @@ func TestSetupLogging_InvalidLevel(t *testing.T) {
 
 func TestSetupLogging_AllLevels(t *testing.T) {
 	for _, level := range []string{"debug", "info", "warn", "error"} {
-		if err := setupLogging("text", level); err != nil {
-			t.Errorf("setupLogging(text, %s): %v", level, err)
+		for _, format := range []string{"text", "json"} {
+			if err := setupLogging(format, level); err != nil {
+				t.Errorf("setupLogging(%s, %s): %v", format, level, err)
+			}
 		}
 	}
 }

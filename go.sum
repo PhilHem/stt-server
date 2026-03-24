@@ -6,3 +6,7 @@ github.com/k2-fsa/sherpa-onnx-go-macos v1.12.33 h1:DHXCy5OPqLBwCWuuRdDSLgFjojIGm
 github.com/k2-fsa/sherpa-onnx-go-macos v1.12.33/go.mod h1:ZOhUAXC62Unj0ZNfu6zxSFKcW96aXf7P3BsqiUyOBbE=
 github.com/k2-fsa/sherpa-onnx-go-windows v1.12.33 h1:1fnMgko7nj6fGxio2RCoBioRodEYRPrt4QebWBGl91Q=
 github.com/k2-fsa/sherpa-onnx-go-windows v1.12.33/go.mod h1:5AX7TU8+P/gInjglY1ijtWUM2b8iyR0QX4yEngzMe64=
+github.com/systemd/slog-journal v0.1.2 h1:oU30ghDjjSsQGBGQLzunPeURHe7fyh0Z99Ap5QeiMFY=
+github.com/systemd/slog-journal v0.1.2/go.mod h1:3ekGgwBlzs82itNN6iG6c3R1iEhkbrvBCpQHxine2L8=
+golang.org/x/sys v0.39.0 h1:CvCKL8MeisomCi6qNZ+wbb0DN9E5AATixKsvNtMoMFk=
+golang.org/x/sys v0.39.0/go.mod h1:OgkHotnGiDImocRcuBABYBEXf8A9a87e/uXjp9XT3ks=
