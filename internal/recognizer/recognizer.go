@@ -79,9 +79,14 @@ func (r *Recognizer) Transcribe(ctx context.Context, samples []float32, sampleRa
 		inferElapsed := time.Since(inferStart)
 
 		out := stream.GetResult()
+		var text, lang string
+		if out != nil {
+			text = strings.TrimSpace(out.Text)
+			lang = out.Lang
+		}
 		ch <- result{res: &TranscriptionResult{
-			Text:          strings.TrimSpace(out.Text),
-			Language:      out.Lang,
+			Text:          text,
+			Language:      lang,
 			Duration:      float32(len(samples)) / float32(sampleRate),
 			InferenceTime: inferElapsed,
 		}}
