@@ -27,7 +27,10 @@ var tracer = otel.Tracer("stt-server")
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":  "ok",
+		"version": config.Version,
+	})
 }
 
 func handleModels(cfg config.Config) http.HandlerFunc {

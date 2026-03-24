@@ -23,8 +23,10 @@ import (
 func main() {
 	var modelName, cacheDir, logFormat, logLevel, otelEndpoint string
 	var maxAudioSec, requestTimeoutSec int
+	var showVersion bool
 	cfg := config.Config{}
 
+	flag.BoolVar(&showVersion, "version", false, "Print version and exit")
 	flag.StringVar(&modelName, "model", config.EnvOr("STT_MODEL", ""), "Model name or path (env: STT_MODEL)")
 	flag.StringVar(&cacheDir, "cache-dir", config.EnvOr("STT_CACHE_DIR", ""), "Model cache directory (env: STT_CACHE_DIR)")
 	flag.IntVar(&cfg.Port, "port", config.EnvInt("STT_PORT", 8000), "HTTP listen port (env: STT_PORT)")
@@ -42,6 +44,11 @@ func main() {
 
 	cfg.MaxAudioDuration = time.Duration(maxAudioSec) * time.Second
 	cfg.RequestTimeout = time.Duration(requestTimeoutSec) * time.Second
+
+	if showVersion {
+		fmt.Printf("stt-server %s (commit: %s, built: %s)\n", config.Version, config.Commit, config.BuildTime)
+		os.Exit(0)
+	}
 
 	if err := observe.SetupLogging(logFormat, logLevel); err != nil {
 		slog.Error("invalid logging config", "error", err)
@@ -80,8 +87,9 @@ func main() {
 	}
 	defer rec.Close()
 
-	// Publish static model info as Prometheus gauge
+	// Publish static info as Prometheus gauges
 	metrics := observe.NewMetrics()
+	metrics.BuildInfo.WithLabelValues(config.Version, config.Commit, config.BuildTime).Set(1)
 	metrics.ModelInfo.WithLabelValues(
 		filepath.Base(cfg.ModelDir),
 		cfg.Provider,
@@ -89,6 +97,7 @@ func main() {
 	).Set(1)
 
 	slog.Info("model loaded",
+		"version", config.Version,
 		"path", cfg.ModelDir,
 		"threads", cfg.NumThreads,
 		"provider", cfg.Provider,

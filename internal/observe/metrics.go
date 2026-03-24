@@ -16,6 +16,7 @@ type Metrics struct {
 	RequestsInProgress prometheus.Gauge
 	RequestsQueued     prometheus.Gauge
 	ModelInfo          *prometheus.GaugeVec
+	BuildInfo          *prometheus.GaugeVec
 
 	// Histograms
 	RequestDuration   prometheus.Histogram
@@ -51,6 +52,11 @@ func NewMetrics() *Metrics {
 			Name: "stt_model_info",
 			Help: "Static model metadata. Value is always 1.",
 		}, []string{"model", "provider", "threads"}),
+
+		BuildInfo: promauto.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "stt_build_info",
+			Help: "Build information. Value is always 1.",
+		}, []string{"version", "commit", "build_time"}),
 
 		RequestDuration: promauto.NewHistogram(prometheus.HistogramOpts{
 			Name:    "stt_request_duration_seconds",
