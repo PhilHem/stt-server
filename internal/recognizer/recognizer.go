@@ -16,6 +16,8 @@ type TranscriptionResult struct {
 	Language      string
 	Duration      float32       // audio duration in seconds
 	InferenceTime time.Duration // model inference time
+	Tokens        []string      // per-token text
+	Timestamps    []float32     // per-token start time in seconds
 }
 
 // Config holds the parameters needed to create a Recognizer.
@@ -80,15 +82,25 @@ func (r *Recognizer) Transcribe(ctx context.Context, samples []float32, sampleRa
 
 		out := stream.GetResult()
 		var text, lang string
+		var tokens []string
+		var timestamps []float32
 		if out != nil {
 			text = strings.TrimSpace(out.Text)
 			lang = out.Lang
+			if len(out.Tokens) > 0 {
+				tokens = out.Tokens
+			}
+			if len(out.Timestamps) > 0 {
+				timestamps = out.Timestamps
+			}
 		}
 		ch <- result{res: &TranscriptionResult{
 			Text:          text,
 			Language:      lang,
 			Duration:      float32(len(samples)) / float32(sampleRate),
 			InferenceTime: inferElapsed,
+			Tokens:        tokens,
+			Timestamps:    timestamps,
 		}}
 	}()
 

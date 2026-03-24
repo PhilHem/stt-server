@@ -239,6 +239,15 @@ func handleTranscription(rec *recognizer.Recognizer, cfg config.Config, m *obser
 		}, observe.TraceAttrs(ctx)...)
 		slog.Info("transcribed", logAttrs...)
 
+		// Build word and segment timing data from tokens/timestamps
+		var words []Word
+		var segments []Segment
+		if len(result.Tokens) > 0 && len(result.Timestamps) > 0 {
+			starts, ends := tokenTimesToStartEnd(result.Timestamps)
+			words = buildWords(result.Tokens, starts, ends)
+			segments = buildSegments(words)
+		}
+
 		// Response format (OpenAI-compatible)
 		responseFormat := r.FormValue("response_format")
 		switch responseFormat {
@@ -247,11 +256,23 @@ func handleTranscription(rec *recognizer.Recognizer, cfg config.Config, m *obser
 			fmt.Fprint(w, result.Text)
 		case "verbose_json":
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{
+			resp := map[string]any{
+				"task":     "transcribe",
 				"text":     result.Text,
 				"language": lang,
 				"duration": result.Duration,
-			})
+			}
+			if len(words) > 0 {
+				resp["words"] = words
+				resp["segments"] = segments
+			}
+			json.NewEncoder(w).Encode(resp)
+		case "srt":
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			fmt.Fprint(w, formatSRT(segments))
+		case "vtt":
+			w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
+			fmt.Fprint(w, formatVTT(segments))
 		default:
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]string{
