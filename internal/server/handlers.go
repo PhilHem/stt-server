@@ -205,9 +205,16 @@ func handleTranscription(rec *recognizer.Recognizer, cfg config.Config, m *obser
 		}
 
 		elapsed := time.Since(start)
+
+		// Language: prefer model detection, fall back to client hint
 		lang := result.Language
 		if lang == "" {
-			lang = "unknown"
+			// Fall back to client-provided language hint (OpenAI `language` param)
+			if hint := r.FormValue("language"); hint != "" {
+				lang = hint
+			} else {
+				lang = "unknown"
+			}
 		}
 
 		span.SetAttributes(
