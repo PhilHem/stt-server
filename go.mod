@@ -3,6 +3,7 @@ module github.com/PhilHem/stt-server
 go 1.24.0
 
 require (
+	github.com/google/uuid v1.6.0
 	github.com/k2-fsa/sherpa-onnx-go v1.12.30
 	github.com/prometheus/client_golang v1.23.2
 	github.com/systemd/slog-journal v0.1.2

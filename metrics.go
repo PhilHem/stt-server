@@ -10,8 +10,8 @@ var (
 
 	requestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "stt_requests_total",
-		Help: "Total transcription requests by status.",
-	}, []string{"status"})
+		Help: "Total transcription requests by status and detected language.",
+	}, []string{"status", "lang"})
 
 	audioBytesTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "stt_audio_bytes_total",
