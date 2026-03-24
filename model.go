@@ -217,10 +217,14 @@ func verifyModelFiles(modelDir string) error {
 			if err != nil {
 				continue
 			}
-			slog.Info("verified ONNX file", "path", match, "size_mb", info.Size()/(1024*1024))
 			if info.Size() < minOnnxFileSize {
 				return fmt.Errorf("ONNX file %s is suspiciously small (%d bytes, expected >= %d)", filepath.Base(match), info.Size(), minOnnxFileSize)
 			}
+			// Verify ONNX protobuf magic byte (field 1, varint = 0x08)
+			if err := checkOnnxMagic(match); err != nil {
+				return err
+			}
+			slog.Info("verified ONNX file", "path", match, "size_mb", info.Size()/(1024*1024))
 			foundOnnx = true
 		}
 	}
@@ -229,5 +233,26 @@ func verifyModelFiles(modelDir string) error {
 		return fmt.Errorf("no ONNX model files found in %s", modelDir)
 	}
 
+	return nil
+}
+
+// checkOnnxMagic verifies that a file starts with the ONNX protobuf header.
+// ONNX uses protobuf: field 1 (ir_version) as varint → first byte is 0x08.
+func checkOnnxMagic(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("cannot open %s: %w", filepath.Base(path), err)
+	}
+	defer f.Close()
+
+	magic := make([]byte, 2)
+	if _, err := io.ReadFull(f, magic); err != nil {
+		return fmt.Errorf("cannot read %s header: %w", filepath.Base(path), err)
+	}
+	// ONNX protobuf: 0x08 = field 1 varint. Some models start with
+	// 0x08 0x0N (ir_version N). Accept any value after 0x08.
+	if magic[0] != 0x08 {
+		return fmt.Errorf("ONNX file %s has invalid header (expected protobuf, got 0x%02x)", filepath.Base(path), magic[0])
+	}
 	return nil
 }

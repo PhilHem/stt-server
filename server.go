@@ -65,6 +65,24 @@ func handleModels(cfg Config) http.HandlerFunc {
 
 func handleTranscription(rec *Recognizer, cfg Config, sem chan struct{}, maxBodyBytes int64) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Concurrency limit FIRST — reject before allocating any resources
+		select {
+		case sem <- struct{}{}:
+			defer func() { <-sem }()
+		default:
+			requestsTotal.WithLabelValues("503", "").Inc()
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{
+					"message": fmt.Sprintf("server busy: %d concurrent requests in progress", cfg.MaxConcurrent),
+					"type":    "invalid_request_error",
+					"code":    "503",
+				},
+			})
+			return
+		}
+
 		// Request timeout
 		ctx, cancel := context.WithTimeout(r.Context(), cfg.RequestTimeout)
 		defer cancel()
@@ -77,6 +95,8 @@ func handleTranscription(rec *Recognizer, cfg Config, sem chan struct{}, maxBody
 		defer span.End()
 
 		start := time.Now()
+		requestsInProgress.Inc()
+		defer requestsInProgress.Dec()
 
 		// Propagate or generate request ID
 		reqID := r.Header.Get(requestIDHeader)
@@ -92,21 +112,6 @@ func handleTranscription(rec *Recognizer, cfg Config, sem chan struct{}, maxBody
 
 		// Inject trace context into response
 		otel.GetTextMapPropagator().Inject(ctx, propagatorCarrier(w.Header()))
-
-		// Concurrency limit — reject with 503 if all slots full
-		select {
-		case sem <- struct{}{}:
-			defer func() { <-sem }()
-		default:
-			requestsTotal.WithLabelValues("503", "").Inc()
-			span.SetStatus(codes.Error, "too many requests")
-			httpError(w, r, ctx, reqID, http.StatusServiceUnavailable,
-				"server busy: %d concurrent requests in progress", cfg.MaxConcurrent)
-			return
-		}
-
-		requestsInProgress.Inc()
-		defer requestsInProgress.Dec()
 
 		// Limit request body size
 		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)

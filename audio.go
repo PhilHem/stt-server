@@ -42,18 +42,30 @@ func isKnownAudioFormat(data []byte) bool {
 		}
 	}
 
-	if len(data) < 2 {
+	if len(data) < 4 {
 		return false
 	}
 
-	// MP3 sync word: first 11 bits set (0xFFE0 or higher)
+	// MP3 frame header: sync word (11 bits set) + valid MPEG version + layer
+	// Byte 0: 0xFF, Byte 1: 0xE0+ (sync), bits 3-4 = version (not 01),
+	// bits 1-2 = layer (not 00)
 	if data[0] == 0xFF && (data[1]&0xE0) == 0xE0 {
-		return true
+		version := (data[1] >> 3) & 0x03
+		layer := (data[1] >> 1) & 0x03
+		bitrate := (data[2] >> 4) & 0x0F
+		sampleRate := (data[2] >> 2) & 0x03
+		// Reject reserved values that indicate non-MP3 data
+		if version != 0x01 && layer != 0x00 && bitrate != 0x0F && sampleRate != 0x03 {
+			return true
+		}
 	}
 
-	// AAC ADTS sync word: 0xFFF0 or higher (first 12 bits set)
+	// AAC ADTS: 12-bit sync (0xFFF) + valid profile (bits 6-7 of byte 2 != 0x03)
 	if data[0] == 0xFF && (data[1]&0xF0) == 0xF0 {
-		return true
+		profile := (data[2] >> 6) & 0x03
+		if profile != 0x03 { // 0x03 is reserved
+			return true
+		}
 	}
 
 	return false
