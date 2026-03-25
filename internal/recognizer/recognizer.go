@@ -3,6 +3,7 @@ package recognizer
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -118,6 +119,20 @@ func (r *Recognizer) Transcribe(ctx context.Context, samples []float32, sampleRa
 // Close waits for all in-flight inference goroutines to finish before
 // destroying the C object. Prevents use-after-free on shutdown.
 func (r *Recognizer) Close() {
-	r.wg.Wait()
+	// Wait for in-flight inference goroutines, but don't block forever.
+	// If goroutines don't finish within 30s, proceed with cleanup anyway.
+	done := make(chan struct{})
+	go func() {
+		r.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// All goroutines finished cleanly
+	case <-time.After(30 * time.Second):
+		slog.Warn("shutdown: timed out waiting for in-flight inference goroutines")
+	}
+
 	sherpa.DeleteOfflineRecognizer(r.inner)
 }

@@ -7,6 +7,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -23,6 +25,23 @@ import (
 
 const requestIDHeader = "X-Request-ID"
 
+// validLangs is the set of ISO 639-1 codes supported by Parakeet V3.
+var validLangs = map[string]bool{
+	"bg": true, "hr": true, "cs": true, "da": true, "nl": true,
+	"en": true, "et": true, "fi": true, "fr": true, "de": true,
+	"el": true, "hu": true, "it": true, "lv": true, "lt": true,
+	"mt": true, "pl": true, "pt": true, "ro": true, "ru": true,
+	"sk": true, "sl": true, "es": true, "sv": true, "uk": true,
+	"unknown": true,
+}
+
+func sanitizeLang(lang string) string {
+	if validLangs[lang] {
+		return lang
+	}
+	return "other"
+}
+
 var tracer = otel.Tracer("stt-server")
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -37,7 +56,7 @@ func handleModels(cfg config.Config) http.HandlerFunc {
 	resp := map[string]any{
 		"object": "list",
 		"data": []map[string]any{{
-			"id":       cfg.ModelDir,
+			"id":       filepath.Base(cfg.ModelDir),
 			"object":   "model",
 			"owned_by": "local",
 		}},
@@ -135,7 +154,11 @@ func handleTranscription(rec *recognizer.Recognizer, cfg config.Config, m *obser
 			m.RequestsTotal.WithLabelValues("400", "").Inc()
 			span.SetStatus(codes.Error, "invalid multipart form")
 			slog.Debug("multipart parse failed", "error", err)
-			httpError(w, r, ctx, reqID, http.StatusBadRequest, observe.TraceAttrs, "invalid request body")
+			msg := "invalid request body"
+			if err.Error() == "http: request body too large" || strings.Contains(err.Error(), "too large") {
+				msg = fmt.Sprintf("file size exceeds maximum of %d MB", cfg.MaxFileSizeMB)
+			}
+			httpError(w, r, ctx, reqID, http.StatusBadRequest, observe.TraceAttrs, "%s", msg)
 			return
 		}
 		if r.MultipartForm != nil {
@@ -227,7 +250,7 @@ func handleTranscription(rec *recognizer.Recognizer, cfg config.Config, m *obser
 		span.SetStatus(codes.Ok, "")
 
 		// Record metrics
-		m.RequestsTotal.WithLabelValues("200", lang).Inc()
+		m.RequestsTotal.WithLabelValues("200", sanitizeLang(lang)).Inc()
 		m.RequestDuration.Observe(elapsed.Seconds())
 		m.InferenceDuration.Observe(result.InferenceTime.Seconds())
 		m.AudioDuration.Observe(float64(result.Duration))

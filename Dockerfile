@@ -73,6 +73,9 @@ COPY --from=go-builder /usr/local/lib/libsherpa-onnx-cxx-api.so /usr/local/lib/
 COPY --from=go-builder /usr/local/lib/libonnxruntime.so /usr/local/lib/
 RUN ldconfig
 
+RUN groupadd -r stt && useradd -r -g stt -s /sbin/nologin stt
+USER stt
+
 # Model: pass a name to auto-download, or mount a local directory.
 #   Auto-download:  -e STT_MODEL=sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8
 #   Local mount:    -e STT_MODEL=/model -v /path/to/model:/model:ro

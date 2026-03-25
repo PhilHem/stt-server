@@ -39,24 +39,55 @@ func tokenTimesToStartEnd(timestamps []float32) (starts, ends []float64) {
 	return starts, ends
 }
 
-// buildWords converts parallel slices of tokens and timestamps into Word structs.
-// Whitespace-only tokens are filtered out. Each word gets start/end from the
-// corresponding timestamp pair.
+// buildWords merges BPE sub-word tokens into whole words using the
+// SentencePiece convention: tokens starting with a space begin a new word,
+// tokens without a leading space continue the previous word, and punctuation
+// tokens attach to the previous word. Timing spans from the first token's
+// start to the last token's end for each merged word.
 func buildWords(tokens []string, starts, ends []float64) []Word {
 	var words []Word
-	for i, tok := range tokens {
-		if strings.TrimSpace(tok) == "" {
-			continue
-		}
+	var currentWord string
+	var wordStart, wordEnd float64
+
+	for i, token := range tokens {
 		if i >= len(starts) || i >= len(ends) {
 			break
 		}
+
+		clean := strings.TrimSpace(token)
+		if clean == "" {
+			continue
+		}
+
+		// New word starts when token has a leading space (SentencePiece convention).
+		isNewWord := len(token) > 0 && token[0] == ' '
+
+		if isNewWord && currentWord != "" {
+			// Flush previous word.
+			words = append(words, Word{
+				Word:  currentWord,
+				Start: wordStart,
+				End:   wordEnd,
+			})
+			currentWord = ""
+		}
+
+		if currentWord == "" {
+			wordStart = starts[i]
+		}
+		currentWord += clean
+		wordEnd = ends[i]
+	}
+
+	// Flush last word.
+	if currentWord != "" {
 		words = append(words, Word{
-			Word:  tok,
-			Start: starts[i],
-			End:   ends[i],
+			Word:  currentWord,
+			Start: wordStart,
+			End:   wordEnd,
 		})
 	}
+
 	return words
 }
 

@@ -6,7 +6,8 @@ import (
 )
 
 func TestBuildWords_Basic(t *testing.T) {
-	tokens := []string{"Hello", "world", "today"}
+	// SentencePiece tokens: leading space means new word
+	tokens := []string{" Hello", " world", " today"}
 	starts := []float64{0.0, 0.5, 1.2}
 	ends := []float64{0.4, 1.0, 1.8}
 
@@ -35,6 +36,51 @@ func TestBuildWords_Basic(t *testing.T) {
 	}
 }
 
+func TestBuildWords_MergesBPETokens(t *testing.T) {
+	// "Alles" = " Al" + "les", "hat" = " hat", "ein" = " ein", "Ende." = " En" + "de" + "."
+	tokens := []string{" Al", "les", " hat", " ein", " En", "de", "."}
+	starts := []float64{0.0, 0.1, 0.3, 0.5, 0.8, 0.9, 1.0}
+	ends := []float64{0.1, 0.2, 0.4, 0.7, 0.9, 1.0, 1.05}
+
+	words := buildWords(tokens, starts, ends)
+
+	if len(words) != 4 {
+		t.Fatalf("expected 4 words, got %d: %+v", len(words), words)
+	}
+
+	// "Alles" merged from " Al" + "les"
+	if words[0].Word != "Alles" {
+		t.Errorf("word[0]: expected 'Alles', got %q", words[0].Word)
+	}
+	if words[0].Start != 0.0 {
+		t.Errorf("word[0].Start: expected 0.0, got %f", words[0].Start)
+	}
+	if words[0].End != 0.2 {
+		t.Errorf("word[0].End: expected 0.2, got %f", words[0].End)
+	}
+
+	// "hat" from " hat"
+	if words[1].Word != "hat" {
+		t.Errorf("word[1]: expected 'hat', got %q", words[1].Word)
+	}
+
+	// "ein" from " ein"
+	if words[2].Word != "ein" {
+		t.Errorf("word[2]: expected 'ein', got %q", words[2].Word)
+	}
+
+	// "Ende." merged from " En" + "de" + "."
+	if words[3].Word != "Ende." {
+		t.Errorf("word[3]: expected 'Ende.', got %q", words[3].Word)
+	}
+	if words[3].Start != 0.8 {
+		t.Errorf("word[3].Start: expected 0.8, got %f", words[3].Start)
+	}
+	if words[3].End != 1.05 {
+		t.Errorf("word[3].End: expected 1.05, got %f", words[3].End)
+	}
+}
+
 func TestBuildWords_Empty(t *testing.T) {
 	words := buildWords(nil, nil, nil)
 	if len(words) != 0 {
@@ -48,23 +94,22 @@ func TestBuildWords_Empty(t *testing.T) {
 }
 
 func TestBuildWords_SkipsWhitespace(t *testing.T) {
-	tokens := []string{"Hello", " ", "world", "\t", "!"}
+	// Whitespace-only tokens should be skipped entirely
+	tokens := []string{" Hello", " ", " world", "\t", "!"}
 	starts := []float64{0.0, 0.3, 0.5, 0.9, 1.0}
 	ends := []float64{0.2, 0.4, 0.8, 0.95, 1.1}
 
 	words := buildWords(tokens, starts, ends)
 
-	if len(words) != 3 {
-		t.Fatalf("expected 3 words (whitespace filtered), got %d", len(words))
+	// "!" has no leading space so it attaches to "world" -> "world!"
+	if len(words) != 2 {
+		t.Fatalf("expected 2 words (whitespace filtered, ! merged), got %d: %+v", len(words), words)
 	}
 	if words[0].Word != "Hello" {
 		t.Errorf("word[0]: expected 'Hello', got %q", words[0].Word)
 	}
-	if words[1].Word != "world" {
-		t.Errorf("word[1]: expected 'world', got %q", words[1].Word)
-	}
-	if words[2].Word != "!" {
-		t.Errorf("word[2]: expected '!', got %q", words[2].Word)
+	if words[1].Word != "world!" {
+		t.Errorf("word[1]: expected 'world!', got %q", words[1].Word)
 	}
 }
 
