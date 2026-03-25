@@ -1,4 +1,4 @@
-package recognizer
+package sherpa
 
 import (
 	"context"
@@ -9,39 +9,23 @@ import (
 	"time"
 
 	sherpa "github.com/k2-fsa/sherpa-onnx-go/sherpa_onnx"
+
+	"github.com/PhilHem/stt-server/internal/recognizer"
 )
 
-// TranscriptionResult holds the output of a transcription.
-type TranscriptionResult struct {
-	Text          string
-	Language      string
-	Duration      float32       // audio duration in seconds
-	InferenceTime time.Duration // model inference time
-	Tokens        []string      // per-token text
-	Timestamps    []float32     // per-token start time in seconds
-}
-
-// Config holds the parameters needed to create a Recognizer.
-type Config struct {
-	ModelDir   string
-	NumThreads int
-	Provider   string // "cpu" or "cuda"
-	Language   string // ISO-639-1 hint (used by Whisper/SenseVoice, ignored by Parakeet)
-}
-
-// Recognizer wraps sherpa-onnx offline recognition with mutex serialization.
+// Engine wraps sherpa-onnx offline recognition with mutex serialization.
 // A WaitGroup tracks in-flight inference goroutines so Close() can wait
 // for them before destroying the C object (prevents use-after-free).
-type Recognizer struct {
+type Engine struct {
 	inner     *sherpa.OfflineRecognizer
 	mu        sync.Mutex
 	wg        sync.WaitGroup
 	closed    bool
-	ModelType string // detected model type (e.g. "nemo_transducer", "whisper")
+	modelType string
 }
 
-// New creates a Recognizer from the given configuration.
-func New(cfg Config) (*Recognizer, error) {
+// New creates a sherpa-onnx Engine from the given configuration.
+func New(cfg recognizer.Config) (recognizer.Engine, error) {
 	config := sherpa.OfflineRecognizerConfig{}
 	config.FeatConfig.SampleRate = 16000
 	config.FeatConfig.FeatureDim = 80
@@ -60,38 +44,38 @@ func New(cfg Config) (*Recognizer, error) {
 		return nil, fmt.Errorf("sherpa-onnx failed to create recognizer (check model files)")
 	}
 
-	return &Recognizer{inner: r, ModelType: modelType}, nil
+	return &Engine{inner: r, modelType: modelType}, nil
 }
 
 // Transcribe runs speech recognition on the given audio samples.
-func (r *Recognizer) Transcribe(ctx context.Context, samples []float32, sampleRate int) (*TranscriptionResult, error) {
+func (e *Engine) Transcribe(ctx context.Context, samples []float32, sampleRate int) (*recognizer.TranscriptionResult, error) {
 	if len(samples) == 0 {
-		return &TranscriptionResult{Duration: 0}, nil
+		return &recognizer.TranscriptionResult{Duration: 0}, nil
 	}
 
 	type result struct {
-		res *TranscriptionResult
+		res *recognizer.TranscriptionResult
 	}
 	ch := make(chan result, 1)
 
-	r.wg.Add(1)
+	e.wg.Add(1)
 	go func() {
-		defer r.wg.Done()
-		r.mu.Lock()
-		defer r.mu.Unlock()
+		defer e.wg.Done()
+		e.mu.Lock()
+		defer e.mu.Unlock()
 
-		if r.closed {
-			ch <- result{res: &TranscriptionResult{}}
+		if e.closed {
+			ch <- result{res: &recognizer.TranscriptionResult{}}
 			return
 		}
 
-		stream := sherpa.NewOfflineStream(r.inner)
+		stream := sherpa.NewOfflineStream(e.inner)
 		defer sherpa.DeleteOfflineStream(stream)
 
 		stream.AcceptWaveform(sampleRate, samples)
 
 		inferStart := time.Now()
-		r.inner.Decode(stream)
+		e.inner.Decode(stream)
 		inferElapsed := time.Since(inferStart)
 
 		out := stream.GetResult()
@@ -108,7 +92,7 @@ func (r *Recognizer) Transcribe(ctx context.Context, samples []float32, sampleRa
 				timestamps = out.Timestamps
 			}
 		}
-		ch <- result{res: &TranscriptionResult{
+		ch <- result{res: &recognizer.TranscriptionResult{
 			Text:          text,
 			Language:      lang,
 			Duration:      float32(len(samples)) / float32(sampleRate),
@@ -131,24 +115,29 @@ func (r *Recognizer) Transcribe(ctx context.Context, samples []float32, sampleRa
 // timeout, the C memory is intentionally leaked to avoid use-after-free.
 // This is safe because Close is only called during shutdown and the OS
 // will reclaim the memory when the process exits.
-func (r *Recognizer) Close() {
+func (e *Engine) Close() {
 	done := make(chan struct{})
 	go func() {
-		r.wg.Wait()
+		e.wg.Wait()
 		close(done)
 	}()
 
 	select {
 	case <-done:
 		// All goroutines finished — safe to free
-		sherpa.DeleteOfflineRecognizer(r.inner)
+		sherpa.DeleteOfflineRecognizer(e.inner)
 	case <-time.After(30 * time.Second):
-		// Goroutines still running inside CGo. Freeing r.inner would cause
+		// Goroutines still running inside CGo. Freeing e.inner would cause
 		// use-after-free. Intentionally leak the C memory — the process is
 		// shutting down and the OS will reclaim it.
-		r.mu.Lock()
-		r.closed = true
-		r.mu.Unlock()
+		e.mu.Lock()
+		e.closed = true
+		e.mu.Unlock()
 		slog.Warn("shutdown: leaked recognizer C object (goroutines still in CGo)")
 	}
+}
+
+// ModelType returns the detected model type.
+func (e *Engine) ModelType() string {
+	return e.modelType
 }

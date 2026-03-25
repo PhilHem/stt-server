@@ -18,11 +18,13 @@ import (
 	"github.com/PhilHem/stt-server/internal/model"
 	"github.com/PhilHem/stt-server/internal/observe"
 	"github.com/PhilHem/stt-server/internal/recognizer"
+	"github.com/PhilHem/stt-server/internal/recognizer/remote"
+	sherpaengine "github.com/PhilHem/stt-server/internal/recognizer/sherpa"
 	"github.com/PhilHem/stt-server/internal/server"
 )
 
 func main() {
-	var modelName, cacheDir, logFormat, logLevel, otelEndpoint string
+	var modelName, cacheDir, logFormat, logLevel, otelEndpoint, backend, grpcEndpoint string
 	var maxAudioSec, requestTimeoutSec int
 	var showVersion bool
 	cfg := config.Config{}
@@ -39,6 +41,8 @@ func main() {
 	flag.IntVar(&cfg.PoolSize, "pool-size", config.EnvInt("STT_POOL_SIZE", 1), "Number of recognizer instances (env: STT_POOL_SIZE)")
 	flag.IntVar(&cfg.MaxConcurrent, "max-concurrent", config.EnvInt("STT_MAX_CONCURRENT", 4), "Max concurrent transcription requests (env: STT_MAX_CONCURRENT)")
 	flag.IntVar(&cfg.MaxQueue, "max-queue", config.EnvInt("STT_MAX_QUEUE", 8), "Max queued requests waiting for a slot (env: STT_MAX_QUEUE)")
+	flag.StringVar(&backend, "backend", config.EnvOr("STT_BACKEND", "sherpa-onnx"), "Inference backend: sherpa-onnx or grpc (env: STT_BACKEND)")
+	flag.StringVar(&grpcEndpoint, "grpc-endpoint", config.EnvOr("STT_GRPC_ENDPOINT", "localhost:50051"), "gRPC inference server endpoint (env: STT_GRPC_ENDPOINT)")
 	flag.IntVar(&cfg.MaxFileSizeMB, "max-file-size", config.EnvInt("STT_MAX_FILE_SIZE_MB", 100), "Max upload file size in MB (env: STT_MAX_FILE_SIZE_MB)")
 	flag.IntVar(&maxAudioSec, "max-audio-duration", config.EnvInt("STT_MAX_AUDIO_DURATION", 600), "Max audio duration in seconds (env: STT_MAX_AUDIO_DURATION)")
 	flag.IntVar(&requestTimeoutSec, "request-timeout", config.EnvInt("STT_REQUEST_TIMEOUT", 300), "Request timeout in seconds (env: STT_REQUEST_TIMEOUT)")
@@ -77,25 +81,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	if modelName == "" {
-		slog.Error("--model or STT_MODEL is required")
-		os.Exit(1)
-	}
-
-	modelDir, err := model.Resolve(modelName, cacheDir)
-	if err != nil {
-		slog.Error("failed to resolve model", "error", err)
-		os.Exit(1)
-	}
-	cfg.ModelDir = modelDir
-
-	pool, err := recognizer.NewPool(recognizer.Config{
-		ModelDir:   cfg.ModelDir,
-		NumThreads: cfg.NumThreads,
-		Provider:   cfg.Provider,
-	}, cfg.PoolSize)
-	if err != nil {
-		slog.Error("failed to load model", "error", err)
+	// Select inference backend and create pool
+	pool, poolErr := createPool(backend, modelName, cacheDir, grpcEndpoint, &cfg)
+	if poolErr != nil {
+		slog.Error("failed to create inference pool", "error", poolErr)
 		os.Exit(1)
 	}
 	defer pool.Close()
@@ -111,6 +100,7 @@ func main() {
 
 	slog.Info("model loaded",
 		"version", config.Version,
+		"backend", backend,
 		"model_type", pool.ModelType(),
 		"pool_size", pool.Size(),
 		"path", cfg.ModelDir,
@@ -145,4 +135,33 @@ func main() {
 		os.Exit(1)
 	}
 	slog.Info("server stopped gracefully")
+}
+
+func createPool(backend, modelName, cacheDir, grpcEndpoint string, cfg *config.Config) (*recognizer.Pool, error) {
+	switch backend {
+	case "sherpa-onnx":
+		if modelName == "" {
+			return nil, fmt.Errorf("--model or STT_MODEL is required for sherpa-onnx backend")
+		}
+		modelDir, err := model.Resolve(modelName, cacheDir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve model: %w", err)
+		}
+		cfg.ModelDir = modelDir
+		return recognizer.NewPool(sherpaengine.New, recognizer.Config{
+			ModelDir:   cfg.ModelDir,
+			NumThreads: cfg.NumThreads,
+			Provider:   cfg.Provider,
+		}, cfg.PoolSize)
+
+	case "grpc":
+		// gRPC backend: each pool slot opens its own connection to the
+		// remote inference server. Pool size controls concurrency.
+		return recognizer.NewPool(func(_ recognizer.Config) (recognizer.Engine, error) {
+			return remote.New(grpcEndpoint)
+		}, recognizer.Config{}, cfg.PoolSize)
+
+	default:
+		return nil, fmt.Errorf("unknown backend: %s", backend)
+	}
 }

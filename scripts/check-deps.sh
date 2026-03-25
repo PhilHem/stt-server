@@ -18,9 +18,12 @@ RULES=(
   "internal/observe|"
   "internal/audio|"
   "internal/recognizer|"
+  "internal/recognizer/sherpa|internal/recognizer"
+  "internal/recognizer/remote|internal/recognizer|internal/recognizer/remote/sttpb"
+  "internal/recognizer/remote/sttpb|"
   "internal/model|"
   "internal/server|internal/config|internal/audio|internal/recognizer|internal/observe"
-  "cmd/stt-server|internal/config|internal/model|internal/observe|internal/recognizer|internal/server"
+  "cmd/stt-server|internal/config|internal/model|internal/observe|internal/recognizer|internal/recognizer/remote|internal/recognizer/sherpa|internal/server"
 )
 
 check_package() {
@@ -77,6 +80,8 @@ if [ "$VIOLATIONS" -gt 0 ]; then
   echo ""
   echo "Layer rules:"
   echo "  config, observe, audio, recognizer, model → (nothing)"
+  echo "  recognizer/sherpa → recognizer (port only)"
+  echo "  recognizer/remote → recognizer (port), recognizer/remote/sttpb (generated)"
   echo "  server → config, audio, recognizer, observe"
   echo "  cmd/stt-server → all internal packages"
   exit 1

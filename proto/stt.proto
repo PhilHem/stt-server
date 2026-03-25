@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+package stt.v1;
+
+option go_package = "github.com/PhilHem/stt-server/internal/recognizer/remote/sttpb";
+
+// InferenceEngine is the contract for a remote speech recognition backend.
+// stt-server acts as the gRPC client; the backend (PopTorch, libtorch,
+// NeMo, etc.) runs as a gRPC server.
+service InferenceEngine {
+  // Transcribe runs speech recognition on raw audio samples.
+  rpc Transcribe(TranscribeRequest) returns (TranscribeResponse);
+
+  // GetModelType returns metadata about the loaded model.
+  rpc GetModelType(GetModelTypeRequest) returns (GetModelTypeResponse);
+}
+
+message TranscribeRequest {
+  // Raw audio samples as packed IEEE 754 float32, little-endian.
+  // Callers must convert from their native format before sending.
+  bytes samples = 1;
+
+  // Sample rate in Hz (e.g. 16000).
+  int32 sample_rate = 2;
+}
+
+message TranscribeResponse {
+  string text = 1;
+  string language = 2;
+  float  duration = 3;          // audio duration in seconds
+  int64  inference_time_ms = 4; // backend-measured inference time
+  repeated string tokens = 5;   // per-token text (BPE tokens)
+  repeated float timestamps = 6; // per-token start time in seconds
+}
+
+message GetModelTypeRequest {}
+
+message GetModelTypeResponse {
+  string model_type = 1; // e.g. "nemo_transducer", "whisper"
+}

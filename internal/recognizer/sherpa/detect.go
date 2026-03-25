@@ -1,4 +1,4 @@
-package recognizer
+package sherpa
 
 import (
 	"fmt"

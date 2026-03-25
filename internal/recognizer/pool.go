@@ -4,51 +4,51 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 )
 
-// Pool manages a channel-based pool of independent Recognizer instances.
-// Each instance has its own sherpa-onnx C object and mutex, enabling
-// true parallel inference.
+// Pool manages a channel-based pool of independent Engine instances.
+// Each instance is borrowed for a single transcription and returned.
 type Pool struct {
-	instances chan *Recognizer
+	instances chan Engine
 	size      int
 	modelType string
 }
 
-// NewPool creates a pool of N recognizer instances from the same config.
-func NewPool(cfg Config, n int) (*Pool, error) {
+// NewPool creates a pool of N engine instances using the given factory.
+func NewPool(factory EngineFactory, cfg Config, n int) (*Pool, error) {
 	if n < 1 {
 		n = 1
 	}
 
 	pool := &Pool{
-		instances: make(chan *Recognizer, n),
+		instances: make(chan Engine, n),
 		size:      n,
 	}
 
 	for i := 0; i < n; i++ {
-		rec, err := New(cfg)
+		eng, err := factory(cfg)
 		if err != nil {
 			// Clean up already-created instances
 			pool.Close()
-			return nil, fmt.Errorf("create recognizer instance %d/%d: %w", i+1, n, err)
+			return nil, fmt.Errorf("create engine instance %d/%d: %w", i+1, n, err)
 		}
 		if i == 0 {
-			pool.modelType = rec.ModelType
+			pool.modelType = eng.ModelType()
 		}
-		pool.instances <- rec
-		slog.Info("recognizer instance created", "instance", i+1, "total", n)
+		pool.instances <- eng
+		slog.Info("engine instance created", "instance", i+1, "total", n)
 	}
 
 	return pool, nil
 }
 
-// Transcribe borrows a recognizer from the pool, runs inference, and returns it.
+// Transcribe borrows an engine from the pool, runs inference, and returns it.
 func (p *Pool) Transcribe(ctx context.Context, samples []float32, sampleRate int) (*TranscriptionResult, error) {
 	select {
-	case rec := <-p.instances:
-		defer func() { p.instances <- rec }()
-		return rec.Transcribe(ctx, samples, sampleRate)
+	case eng := <-p.instances:
+		defer func() { p.instances <- eng }()
+		return eng.Transcribe(ctx, samples, sampleRate)
 	case <-ctx.Done():
 		return nil, fmt.Errorf("pool: all %d instances busy: %w", p.size, ctx.Err())
 	}
@@ -58,8 +58,8 @@ func (p *Pool) Transcribe(ctx context.Context, samples []float32, sampleRate int
 func (p *Pool) Close() {
 	for {
 		select {
-		case rec := <-p.instances:
-			rec.Close()
+		case eng := <-p.instances:
+			eng.Close()
 		default:
 			return
 		}
@@ -75,4 +75,26 @@ func (p *Pool) ModelType() string {
 // Size returns the number of instances in the pool.
 func (p *Pool) Size() int {
 	return p.size
+}
+
+// Ping checks that at least one engine instance is available and responsive.
+// Returns nil if healthy, an error otherwise. Uses a short timeout to avoid
+// blocking the readiness probe.
+func (p *Pool) Ping(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	select {
+	case eng := <-p.instances:
+		defer func() { p.instances <- eng }()
+		// Engine is available — for remote backends this confirms the
+		// connection was established. ModelType() is a cached value,
+		// so this doesn't make a network call.
+		if eng.ModelType() == "" {
+			return fmt.Errorf("engine has no model type")
+		}
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("ping: all %d instances busy", p.size)
+	}
 }

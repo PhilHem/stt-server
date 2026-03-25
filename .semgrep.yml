@@ -1,0 +1,104 @@
+rules:
+
+  # -----------------------------------------------------------------------
+  # 1. gRPC abort leaking internal exception details
+  # -----------------------------------------------------------------------
+  - id: stt.grpc-abort-leaks-exception
+    patterns:
+      - pattern-either:
+          - pattern: context.abort($CODE, str($E))
+          - pattern: context.abort($CODE, f"...{$E}...")
+          - pattern: context.abort($CODE, f"...{$E!s}...")
+          - pattern: context.abort($CODE, f"...{$E!r}...")
+          - pattern: context.abort($CODE, f"...{str($E)}...")
+    message: >
+      context.abort() includes exception details that are sent to the client.
+      Internal stack traces and error messages can reveal file paths, library
+      versions, and system state. Return a generic message and log the
+      exception server-side instead.
+    severity: ERROR
+    languages: [python]
+    paths:
+      include:
+        - /tools/inference-server/
+
+  # -----------------------------------------------------------------------
+  # 2. Insecure gRPC port (Python)
+  # -----------------------------------------------------------------------
+  - id: stt.insecure-grpc-port
+    pattern: $SERVER.add_insecure_port(...)
+    message: >
+      add_insecure_port() starts gRPC without TLS. Traffic between the Go
+      proxy and the Python inference server is unencrypted. Acceptable on a
+      trusted private network (10.10.10.0/24), but flag if this service
+      becomes reachable from untrusted networks.
+    severity: WARNING
+    languages: [python]
+
+  # -----------------------------------------------------------------------
+  # 3. Insecure gRPC credentials (Go)
+  # -----------------------------------------------------------------------
+  - id: stt.insecure-grpc-credentials
+    pattern: insecure.NewCredentials()
+    message: >
+      insecure.NewCredentials() disables TLS on the gRPC client connection.
+      Traffic between the Go proxy and the inference server is unencrypted.
+      Acceptable on a trusted private network, but must be replaced with TLS
+      credentials if the link crosses untrusted networks.
+    severity: WARNING
+    languages: [go]
+
+  # -----------------------------------------------------------------------
+  # 4. Division by sample_rate (possible zero from request input)
+  # -----------------------------------------------------------------------
+  - id: stt.division-by-request-field
+    pattern-regex: /\s*sample_rate\b
+    message: >
+      Division by sample_rate without a prior zero-check can cause
+      ZeroDivisionError if a client sends sample_rate=0. Validate that
+      sample_rate > 0 before any arithmetic using it.
+    severity: WARNING
+    languages: [python]
+    paths:
+      include:
+        - /tools/inference-server/
+
+  # -----------------------------------------------------------------------
+  # 5. grpc.server() without options= parameter
+  # -----------------------------------------------------------------------
+  - id: stt.grpc-server-no-options
+    patterns:
+      - pattern: grpc.server($EXECUTOR)
+      - pattern-not: grpc.server($EXECUTOR, options=...)
+      - pattern-not: grpc.server($EXECUTOR, ..., options=..., ...)
+    message: >
+      grpc.server() created without options=. Without explicit options the
+      server accepts unbounded message sizes and has no keepalive. Pass
+      options=[...] to set max_send_message_length,
+      max_receive_message_length, and keepalive parameters.
+    severity: WARNING
+    languages: [python]
+
+  # -----------------------------------------------------------------------
+  # 6. np.frombuffer without alignment check
+  # -----------------------------------------------------------------------
+  - id: stt.np-frombuffer-no-alignment-check
+    pattern-regex: np\.frombuffer\(
+    message: >
+      Ensure byte alignment is validated before np.frombuffer to avoid
+      ValueError on misaligned input. For float32 data the byte length must
+      be a multiple of 4.
+    severity: WARNING
+    languages: [python]
+
+  # -----------------------------------------------------------------------
+  # 7. Hardcoded /tmp/ paths
+  # -----------------------------------------------------------------------
+  - id: stt.predictable-tmp-path
+    pattern-regex: "['\"]\/tmp\/[a-zA-Z]"
+    message: >
+      Hardcoded /tmp path is predictable. Use tempfile.mkdtemp() for unique
+      paths on shared systems. Predictable paths enable symlink attacks where
+      another user pre-creates the path as a symlink to a sensitive file.
+    severity: WARNING
+    languages: [python]

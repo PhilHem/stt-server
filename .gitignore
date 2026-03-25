@@ -1,3 +1,5 @@
 models/
 /stt-server
 *.wav
+__pycache__/
+tools/inference-server/.venv/

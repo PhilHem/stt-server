@@ -59,6 +59,11 @@ func handleReady(pool *recognizer.Pool) http.HandlerFunc {
 			json.NewEncoder(w).Encode(map[string]string{"status": "not ready", "reason": "recognizer not initialized"})
 			return
 		}
+		if err := pool.Ping(r.Context()); err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]string{"status": "not ready", "reason": err.Error()})
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{
 			"status":  "ready",
