@@ -204,6 +204,17 @@ func handleTranscription(rec *recognizer.Recognizer, cfg config.Config, m *obser
 		}
 		m.DecodeDuration.Observe(decodeElapsed.Seconds())
 
+		// Enforce min audio duration — sherpa-onnx crashes on < ~80 samples (5ms).
+		// Use 100ms (1600 samples at 16kHz) as a safe minimum.
+		const minSamples = 1600
+		if len(samples) < minSamples {
+			m.RequestsTotal.WithLabelValues("400", "").Inc()
+			span.SetStatus(codes.Error, "audio too short")
+			httpError(w, r, ctx, reqID, http.StatusBadRequest, observe.TraceAttrs,
+				"audio too short (minimum 100ms required)")
+			return
+		}
+
 		// Enforce max audio duration
 		audioDur := float32(len(samples)) / float32(sampleRate)
 		if audioDur > float32(cfg.MaxAudioDuration.Seconds()) {
