@@ -20,6 +20,7 @@ func New(rec *recognizer.Recognizer, cfg config.Config, m *observe.Metrics) *htt
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", handleHealth)
+	mux.HandleFunc("GET /ready", handleReady(rec))
 	mux.Handle("GET /metrics", promhttp.Handler())
 	mux.HandleFunc("GET /v1/models", handleModels(cfg))
 	mux.HandleFunc("POST /v1/audio/transcriptions", handleTranscription(rec, cfg, m, sem, queue, maxBodyBytes))

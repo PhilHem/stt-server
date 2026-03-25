@@ -3,6 +3,8 @@ package model
 import (
 	"archive/tar"
 	"compress/bzip2"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log/slog"
@@ -78,7 +80,7 @@ func Resolve(modelName, cacheDir string) (string, error) {
 	url := fmt.Sprintf(sherpaReleaseURL, modelName)
 	slog.Info("downloading model", "model", modelName, "url", url)
 
-	if err := downloadAndExtract(url, cacheDir); err != nil {
+	if err := downloadAndExtract(url, cacheDir, modelName); err != nil {
 		os.RemoveAll(modelDir) // clean up partial extraction
 		return "", fmt.Errorf("download model %s: %w", modelName, err)
 	}
@@ -94,8 +96,17 @@ func Resolve(modelName, cacheDir string) (string, error) {
 	return modelDir, nil
 }
 
-// downloadAndExtract fetches a .tar.bz2 URL and extracts it to destDir.
-func downloadAndExtract(url, destDir string) error {
+// knownChecksums maps model names to their expected SHA-256 hashes.
+// When a model is listed here, the download is rejected if the hash doesn't match.
+// Unknown models proceed with a warning — run with the logged hash to pin later.
+var knownChecksums = map[string]string{
+	// TODO: populate with real checksums from verified downloads, e.g.:
+	// "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8": "abc123...",
+}
+
+// downloadAndExtract fetches a .tar.bz2 URL, verifies its SHA-256 checksum,
+// and extracts it to destDir. The modelName is used to look up expected checksums.
+func downloadAndExtract(url, destDir, modelName string) error {
 	// Custom client with redirect limits, HTTPS enforcement, and timeout.
 	client := &http.Client{
 		Timeout: 10 * time.Minute,
@@ -124,7 +135,45 @@ func downloadAndExtract(url, destDir string) error {
 		slog.Info("download started", "size_mb", resp.ContentLength/(1024*1024))
 	}
 
-	return extractTarBz2(resp.Body, destDir)
+	// Download to temp file so we can compute the checksum before extracting.
+	tmpFile, err := os.CreateTemp(destDir, "download-*.tar.bz2")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	defer tmpFile.Close()
+
+	written, err := io.Copy(tmpFile, resp.Body)
+	if err != nil {
+		return fmt.Errorf("download to temp file: %w", err)
+	}
+
+	// Compute SHA-256 of the downloaded tarball.
+	if _, err := tmpFile.Seek(0, 0); err != nil {
+		return fmt.Errorf("seek temp file: %w", err)
+	}
+	h := sha256.New()
+	if _, err := io.Copy(h, tmpFile); err != nil {
+		return fmt.Errorf("compute checksum: %w", err)
+	}
+	checksum := hex.EncodeToString(h.Sum(nil))
+	slog.Info("download complete", "sha256", checksum, "size_mb", written/(1024*1024))
+
+	// Verify checksum if this model has a known-good hash.
+	if expected, ok := knownChecksums[modelName]; ok {
+		if checksum != expected {
+			return fmt.Errorf("checksum mismatch for %s: expected %s, got %s", modelName, expected, checksum)
+		}
+		slog.Info("checksum verified", "model", modelName)
+	} else {
+		slog.Warn("no known checksum for model, skipping verification (pin the logged sha256 to enable)", "model", modelName)
+	}
+
+	// Extract from the verified temp file.
+	if _, err := tmpFile.Seek(0, 0); err != nil {
+		return fmt.Errorf("seek temp file for extraction: %w", err)
+	}
+	return extractTarBz2(tmpFile, destDir)
 }
 
 // extractTarBz2 extracts a .tar.bz2 stream to destDir.

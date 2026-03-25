@@ -1,5 +1,9 @@
+# Base images pinned by digest for reproducible builds.
+# Update digests periodically: docker manifest inspect <image> | grep digest
+
 # Stage 1: Build minimal static ffmpeg (audio decode only, no external libs)
-FROM debian:bookworm-slim AS ffmpeg-builder
+# Pin updated: 2026-03-25. Run `docker manifest inspect debian:bookworm-slim` to refresh.
+FROM debian:bookworm-slim@sha256:8af0e5095f9964007f5ebd11191dfe52dcb51bf3afa2c07f055fc5451b78ba0e AS ffmpeg-builder
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -7,8 +11,13 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 ARG FFMPEG_VERSION=7.1
+# SHA-256 from https://ffmpeg.org/releases/ffmpeg-7.1.tar.xz.sha256
+ARG FFMPEG_SHA256=40973d44970dbc83ef302b0609f2e74982be2d85916dd2ee7472d30678a7abe6
 
-RUN curl -fsSL "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" | tar xJ
+RUN curl -fsSL "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" -o /tmp/ffmpeg.tar.xz && \
+    echo "${FFMPEG_SHA256}  /tmp/ffmpeg.tar.xz" | sha256sum -c && \
+    tar xJf /tmp/ffmpeg.tar.xz && \
+    rm /tmp/ffmpeg.tar.xz
 
 WORKDIR /ffmpeg-${FFMPEG_VERSION}
 RUN ./configure \
@@ -36,7 +45,8 @@ RUN ./configure \
 # ---
 
 # Stage 2: Build Go binary
-FROM golang:1.26-bookworm AS go-builder
+# Pin updated: 2026-03-25. Run `docker manifest inspect golang:1.26-bookworm` to refresh.
+FROM golang:1.26-bookworm@sha256:77d2fa8be6beead13c85eb83d016c17806a376015a8b6a7ba24bc4c992e654b5 AS go-builder
 WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
@@ -60,7 +70,8 @@ RUN cp $(go env GOMODCACHE)/github.com/k2-fsa/sherpa-onnx-go-linux@*/lib/x86_64-
 # ---
 
 # Stage 3: Minimal runtime
-FROM debian:bookworm-slim
+# Pin updated: 2026-03-25. Run `docker manifest inspect debian:bookworm-slim` to refresh.
+FROM debian:bookworm-slim@sha256:8af0e5095f9964007f5ebd11191dfe52dcb51bf3afa2c07f055fc5451b78ba0e
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl ca-certificates && \

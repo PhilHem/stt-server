@@ -52,6 +52,21 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func handleReady(rec *recognizer.Recognizer) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if rec == nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]string{"status": "not ready", "reason": "recognizer not initialized"})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"status":  "ready",
+			"version": config.Version,
+		})
+	}
+}
+
 func handleModels(cfg config.Config) http.HandlerFunc {
 	resp := map[string]any{
 		"object": "list",
