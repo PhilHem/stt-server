@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -52,6 +53,12 @@ func main() {
 
 	if err := observe.SetupLogging(logFormat, logLevel); err != nil {
 		slog.Error("invalid logging config", "error", err)
+		os.Exit(1)
+	}
+
+	// Verify ffmpeg is available (required for audio decoding)
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		slog.Error("ffmpeg not found in PATH (required for audio decoding)")
 		os.Exit(1)
 	}
 

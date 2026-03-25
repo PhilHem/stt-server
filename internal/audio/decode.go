@@ -124,7 +124,7 @@ func Decode(ctx context.Context, data []byte, filename string) ([]float32, int, 
 		return nil, 0, fmt.Errorf("audio decode failed")
 	}
 
-	if len(raw) == 0 {
+	if len(raw) < 2 {
 		return nil, 0, fmt.Errorf("ffmpeg produced no output")
 	}
 
