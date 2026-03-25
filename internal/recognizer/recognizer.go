@@ -36,6 +36,7 @@ type Recognizer struct {
 	inner     *sherpa.OfflineRecognizer
 	mu        sync.Mutex
 	wg        sync.WaitGroup
+	closed    bool
 	ModelType string // detected model type (e.g. "nemo_transducer", "whisper")
 }
 
@@ -74,6 +75,11 @@ func (r *Recognizer) Transcribe(ctx context.Context, samples []float32, sampleRa
 		defer r.wg.Done()
 		r.mu.Lock()
 		defer r.mu.Unlock()
+
+		if r.closed {
+			ch <- result{res: &TranscriptionResult{}}
+			return
+		}
 
 		stream := sherpa.NewOfflineStream(r.inner)
 		defer sherpa.DeleteOfflineStream(stream)
@@ -133,6 +139,11 @@ func (r *Recognizer) Close() {
 	case <-time.After(30 * time.Second):
 		slog.Warn("shutdown: timed out waiting for in-flight inference goroutines")
 	}
+
+	// Mark as closed so orphaned goroutines bail out instead of using freed memory
+	r.mu.Lock()
+	r.closed = true
+	r.mu.Unlock()
 
 	sherpa.DeleteOfflineRecognizer(r.inner)
 }
