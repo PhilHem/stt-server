@@ -229,16 +229,18 @@ func handleTranscription(rec *recognizer.Recognizer, cfg config.Config, m *obser
 
 		elapsed := time.Since(start)
 
-		// Language: prefer model detection, fall back to client hint
-		lang := result.Language
-		if lang == "" {
-			// Fall back to client-provided language hint (OpenAI `language` param)
+		// Language: prefer model detection, fall back to client hint.
+		// Raw lang is used in the API response; sanitized lang is used for
+		// metrics, logs, and spans to prevent cardinality bombs and log injection.
+		rawLang := result.Language
+		if rawLang == "" {
 			if hint := r.FormValue("language"); hint != "" {
-				lang = hint
+				rawLang = hint
 			} else {
-				lang = "unknown"
+				rawLang = "unknown"
 			}
 		}
+		lang := sanitizeLang(rawLang)
 
 		span.SetAttributes(
 			attribute.Float64("audio.duration_s", float64(result.Duration)),
@@ -250,7 +252,7 @@ func handleTranscription(rec *recognizer.Recognizer, cfg config.Config, m *obser
 		span.SetStatus(codes.Ok, "")
 
 		// Record metrics
-		m.RequestsTotal.WithLabelValues("200", sanitizeLang(lang)).Inc()
+		m.RequestsTotal.WithLabelValues("200", lang).Inc()
 		m.RequestDuration.Observe(elapsed.Seconds())
 		m.InferenceDuration.Observe(result.InferenceTime.Seconds())
 		m.AudioDuration.Observe(float64(result.Duration))
@@ -289,7 +291,7 @@ func handleTranscription(rec *recognizer.Recognizer, cfg config.Config, m *obser
 			resp := map[string]any{
 				"task":     "transcribe",
 				"text":     result.Text,
-				"language": lang,
+				"language": rawLang,
 				"duration": result.Duration,
 			}
 			if len(words) > 0 {
