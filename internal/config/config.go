@@ -13,6 +13,7 @@ type Config struct {
 	Port             int
 	NumThreads       int
 	Provider         string // "cpu" or "cuda"
+	PoolSize         int    // number of recognizer instances (default 1, set higher for GPU)
 	MaxConcurrent    int
 	MaxQueue         int
 	MaxFileSizeMB    int

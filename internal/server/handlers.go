@@ -52,9 +52,9 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func handleReady(rec *recognizer.Recognizer) http.HandlerFunc {
+func handleReady(pool *recognizer.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if rec == nil {
+		if pool == nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			json.NewEncoder(w).Encode(map[string]string{"status": "not ready", "reason": "recognizer not initialized"})
 			return
@@ -82,7 +82,7 @@ func handleModels(cfg config.Config) http.HandlerFunc {
 	}
 }
 
-func handleTranscription(rec *recognizer.Recognizer, cfg config.Config, m *observe.Metrics, sem chan struct{}, queue chan struct{}, maxBodyBytes int64) http.HandlerFunc {
+func handleTranscription(pool *recognizer.Pool, cfg config.Config, m *observe.Metrics, sem chan struct{}, queue chan struct{}, maxBodyBytes int64) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Request timeout — applies to queue wait + processing
 		ctx, cancel := context.WithTimeout(r.Context(), cfg.RequestTimeout)
@@ -242,7 +242,7 @@ func handleTranscription(rec *recognizer.Recognizer, cfg config.Config, m *obser
 
 		// Inference
 		_, inferSpan := tracer.Start(ctx, "model.inference")
-		result, err := rec.Transcribe(ctx, samples, sampleRate)
+		result, err := pool.Transcribe(ctx, samples, sampleRate)
 		inferSpan.End()
 
 		if err != nil {

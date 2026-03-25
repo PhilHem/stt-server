@@ -36,6 +36,7 @@ func main() {
 	flag.StringVar(&logFormat, "log-format", config.EnvOr("STT_LOG_FORMAT", "text"), "Log format: text, json, or journal (env: STT_LOG_FORMAT)")
 	flag.StringVar(&logLevel, "log-level", config.EnvOr("STT_LOG_LEVEL", "info"), "Log level: debug, info, warn, error (env: STT_LOG_LEVEL)")
 	flag.StringVar(&otelEndpoint, "otel-endpoint", config.EnvOr("OTEL_EXPORTER_OTLP_ENDPOINT", ""), "OTLP gRPC endpoint for traces (env: OTEL_EXPORTER_OTLP_ENDPOINT)")
+	flag.IntVar(&cfg.PoolSize, "pool-size", config.EnvInt("STT_POOL_SIZE", 1), "Number of recognizer instances (env: STT_POOL_SIZE)")
 	flag.IntVar(&cfg.MaxConcurrent, "max-concurrent", config.EnvInt("STT_MAX_CONCURRENT", 4), "Max concurrent transcription requests (env: STT_MAX_CONCURRENT)")
 	flag.IntVar(&cfg.MaxQueue, "max-queue", config.EnvInt("STT_MAX_QUEUE", 8), "Max queued requests waiting for a slot (env: STT_MAX_QUEUE)")
 	flag.IntVar(&cfg.MaxFileSizeMB, "max-file-size", config.EnvInt("STT_MAX_FILE_SIZE_MB", 100), "Max upload file size in MB (env: STT_MAX_FILE_SIZE_MB)")
@@ -88,16 +89,16 @@ func main() {
 	}
 	cfg.ModelDir = modelDir
 
-	rec, err := recognizer.New(recognizer.Config{
+	pool, err := recognizer.NewPool(recognizer.Config{
 		ModelDir:   cfg.ModelDir,
 		NumThreads: cfg.NumThreads,
 		Provider:   cfg.Provider,
-	})
+	}, cfg.PoolSize)
 	if err != nil {
 		slog.Error("failed to load model", "error", err)
 		os.Exit(1)
 	}
-	defer rec.Close()
+	defer pool.Close()
 
 	// Publish static info as Prometheus gauges
 	metrics := observe.NewMetrics()
@@ -110,7 +111,8 @@ func main() {
 
 	slog.Info("model loaded",
 		"version", config.Version,
-		"model_type", rec.ModelType,
+		"model_type", pool.ModelType(),
+		"pool_size", pool.Size(),
 		"path", cfg.ModelDir,
 		"threads", cfg.NumThreads,
 		"provider", cfg.Provider,
@@ -121,7 +123,7 @@ func main() {
 		"request_timeout_s", int(cfg.RequestTimeout.Seconds()),
 	)
 
-	srv := server.New(rec, cfg, metrics)
+	srv := server.New(pool, cfg, metrics)
 
 	// Graceful shutdown: drain in-flight requests on SIGTERM/SIGINT
 	shutdownCtx, stop := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)

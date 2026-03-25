@@ -127,10 +127,11 @@ func (r *Recognizer) Transcribe(ctx context.Context, samples []float32, sampleRa
 }
 
 // Close waits for all in-flight inference goroutines to finish before
-// destroying the C object. Prevents use-after-free on shutdown.
+// destroying the C object. If goroutines are still inside CGo after the
+// timeout, the C memory is intentionally leaked to avoid use-after-free.
+// This is safe because Close is only called during shutdown and the OS
+// will reclaim the memory when the process exits.
 func (r *Recognizer) Close() {
-	// Wait for in-flight inference goroutines, but don't block forever.
-	// If goroutines don't finish within 30s, proceed with cleanup anyway.
 	done := make(chan struct{})
 	go func() {
 		r.wg.Wait()
@@ -139,15 +140,15 @@ func (r *Recognizer) Close() {
 
 	select {
 	case <-done:
-		// All goroutines finished cleanly
+		// All goroutines finished — safe to free
+		sherpa.DeleteOfflineRecognizer(r.inner)
 	case <-time.After(30 * time.Second):
-		slog.Warn("shutdown: timed out waiting for in-flight inference goroutines")
+		// Goroutines still running inside CGo. Freeing r.inner would cause
+		// use-after-free. Intentionally leak the C memory — the process is
+		// shutting down and the OS will reclaim it.
+		r.mu.Lock()
+		r.closed = true
+		r.mu.Unlock()
+		slog.Warn("shutdown: leaked recognizer C object (goroutines still in CGo)")
 	}
-
-	// Mark as closed so orphaned goroutines bail out instead of using freed memory
-	r.mu.Lock()
-	r.closed = true
-	r.mu.Unlock()
-
-	sherpa.DeleteOfflineRecognizer(r.inner)
 }
