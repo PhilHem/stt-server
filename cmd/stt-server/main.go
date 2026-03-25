@@ -71,6 +71,11 @@ func main() {
 	}
 	defer shutdownTracing(ctx)
 
+	if err := cfg.Validate(); err != nil {
+		slog.Error("invalid configuration", "error", err)
+		os.Exit(1)
+	}
+
 	if modelName == "" {
 		slog.Error("--model or STT_MODEL is required")
 		os.Exit(1)

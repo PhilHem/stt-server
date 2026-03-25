@@ -63,10 +63,15 @@ func Resolve(modelName, cacheDir string) (string, error) {
 
 	modelDir := filepath.Join(cacheDir, modelName)
 
-	// Already cached?
+	// Already cached? Verify integrity even on cache hit.
 	if _, err := os.Stat(filepath.Join(modelDir, "tokens.txt")); err == nil {
-		slog.Info("using cached model", "path", modelDir)
-		return modelDir, nil
+		if err := verifyModelFiles(modelDir); err != nil {
+			slog.Warn("cached model failed verification, re-downloading", "path", modelDir, "error", err)
+			os.RemoveAll(modelDir)
+		} else {
+			slog.Info("using cached model", "path", modelDir)
+			return modelDir, nil
+		}
 	}
 
 	// Download from sherpa-onnx GitHub releases

@@ -65,6 +65,10 @@ func New(cfg Config) (*Recognizer, error) {
 
 // Transcribe runs speech recognition on the given audio samples.
 func (r *Recognizer) Transcribe(ctx context.Context, samples []float32, sampleRate int) (*TranscriptionResult, error) {
+	if len(samples) == 0 {
+		return &TranscriptionResult{Duration: 0}, nil
+	}
+
 	type result struct {
 		res *TranscriptionResult
 	}
