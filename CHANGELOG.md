@@ -1,5 +1,44 @@
 # Changelog
 
+## v0.4.1 - 2026-03-26
+
+### Added
+
+- Swappable inference backends via Engine interface — server can now delegate to external inference servers over gRPC
+- gRPC remote backend (`--backend grpc --grpc-endpoint host:port`) for benchmarking on accelerators (Graphcore IPU, remote GPU)
+- Python gRPC inference server (`tools/inference-server/`) with 5 backends: echo, NeMo, PyTorch encoder, PopTorch/IPU, Parakeet TDT
+- Proto contract (`proto/stt.proto`) defining the InferenceEngine service between stt-server and remote backends
+- `/ready` endpoint now probes backend health — returns 503 when gRPC backend is unreachable
+- gRPC keepalive (10s ping, 5s timeout) and 120s per-call deadline for defense-in-depth
+- 7 semgrep rules (`.semgrep.yml`) for CI: catches leaked error details, insecure gRPC, missing size limits
+
+### Changed
+
+- Inference code restructured into port/adapter pattern: sherpa-onnx moved to `internal/recognizer/sherpa/`, new `Engine` interface in `internal/recognizer/engine.go`
+- Pool is now generic over any Engine implementation, not tied to sherpa-onnx
+
+### Fixed
+
+- gRPC server validates all inputs before inference: byte alignment, empty audio, sample rate, max duration, NaN/Inf
+- Error messages no longer leak internal details (stack traces, file paths) to gRPC clients
+- PopTorch backend uses a lock for thread safety on IPU inference
+- Server shutdown cleans up backend resources on all exit paths (not just KeyboardInterrupt)
+- Port bind failures are detected and reported at startup
+- CTC blank token position auto-detected (NeMo places blank at end of vocab, not beginning)
+- Token file blank lines preserved to maintain ID alignment
+
+## v0.4.0 - 2026-03-25
+
+### Added
+
+- Recognizer pool: N independent inference instances for parallel GPU processing (`--pool-size`, default 1)
+- Cosign keyless image signing in CI (id-token:write)
+- Container hardened: non-root user, DropCapability=ALL, ReadOnly=true, NoNewPrivileges=true
+
+### Changed
+
+- Concurrency model: channel-based pool replaces single-mutex serialization — enables true parallel inference on GPU
+
 ## v0.3.1 - 2026-03-25
 
 ### Added
