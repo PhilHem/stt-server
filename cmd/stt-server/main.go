@@ -25,7 +25,7 @@ import (
 
 func main() {
 	var modelName, cacheDir, logFormat, logLevel, otelEndpoint, backend, grpcEndpoint, vadModel string
-	var diarURL string
+	var diarURL, fastDiarURL string
 	var maxAudioSec, requestTimeoutSec int
 	var showVersion bool
 	cfg := config.Config{}
@@ -34,6 +34,7 @@ func main() {
 	flag.StringVar(&modelName, "model", config.EnvOr("STT_MODEL", ""), "Model name or path (env: STT_MODEL)")
 	flag.StringVar(&vadModel, "vad-model", config.EnvOr("STT_VAD_MODEL", ""), "Path to a Silero VAD model; enables VAD-based segmentation (env: STT_VAD_MODEL)")
 	flag.StringVar(&diarURL, "diarize-url", config.EnvOr("STT_DIARIZE_URL", ""), "Speaker-diarization service endpoint; enables opt-in diarization (env: STT_DIARIZE_URL)")
+	flag.StringVar(&fastDiarURL, "sortformer-url", config.EnvOr("STT_SORTFORMER_URL", ""), "Fast diarization service endpoint (Sortformer); used when the caller hints 1..4 speakers (env: STT_SORTFORMER_URL)")
 	flag.StringVar(&cfg.DiarizeModel, "diarize-model", config.EnvOr("STT_DIARIZE_MODEL", ""), "Request model name that opts into diarization (env: STT_DIARIZE_MODEL)")
 	flag.StringVar(&cacheDir, "cache-dir", config.EnvOr("STT_CACHE_DIR", ""), "Model cache directory (env: STT_CACHE_DIR)")
 	flag.IntVar(&cfg.Port, "port", config.EnvInt("STT_PORT", 8000), "HTTP listen port (env: STT_PORT)")
@@ -87,7 +88,7 @@ func main() {
 	}
 
 	// Select inference backend and create pool
-	pool, poolErr := createPool(backend, modelName, cacheDir, grpcEndpoint, vadModel, diarURL, &cfg)
+	pool, poolErr := createPool(backend, modelName, cacheDir, grpcEndpoint, vadModel, diarURL, fastDiarURL, &cfg)
 	if poolErr != nil {
 		slog.Error("failed to create inference pool", "error", poolErr)
 		os.Exit(1)
@@ -142,7 +143,7 @@ func main() {
 	slog.Info("server stopped gracefully")
 }
 
-func createPool(backend, modelName, cacheDir, grpcEndpoint, vadModel, diarURL string, cfg *config.Config) (*recognizer.Pool, error) {
+func createPool(backend, modelName, cacheDir, grpcEndpoint, vadModel, diarURL, fastDiarURL string, cfg *config.Config) (*recognizer.Pool, error) {
 	switch backend {
 	case "sherpa-onnx":
 		if modelName == "" {
@@ -154,11 +155,12 @@ func createPool(backend, modelName, cacheDir, grpcEndpoint, vadModel, diarURL st
 		}
 		cfg.ModelDir = modelDir
 		return recognizer.NewPool(sherpaengine.New, recognizer.Config{
-			ModelDir:   cfg.ModelDir,
-			NumThreads: cfg.NumThreads,
-			Provider:   cfg.Provider,
-			VadModel:   vadModel,
-			DiarizeURL: diarURL,
+			ModelDir:       cfg.ModelDir,
+			NumThreads:     cfg.NumThreads,
+			Provider:       cfg.Provider,
+			VadModel:       vadModel,
+			DiarizeURL:     diarURL,
+			FastDiarizeURL: fastDiarURL,
 		}, cfg.PoolSize)
 
 	case "grpc":

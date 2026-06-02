@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.8.0 - 2026-06-03
+
+### Added
+
+- Diarization uses a faster speaker-recognition service when the caller states the audio has 1–4 speakers, signalled by a `speakers=N` hint in the request prompt; more or an unknown number of speakers keep using the general-purpose service.
+- The fast diarization service address is configured with `STT_SORTFORMER_URL`.
+
 ## v0.7.1 - 2026-06-02
 
 ### Fixed

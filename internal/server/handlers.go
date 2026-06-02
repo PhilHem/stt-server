@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,6 +25,27 @@ import (
 )
 
 const requestIDHeader = "X-Request-ID"
+
+// parseSpeakerCount extracts a "speakers=N" hint from the transcription prompt
+// field — the standard OpenAI field LiteLLM forwards, used to carry the speaker
+// count past the proxy. Returns 0 when absent or unparseable.
+func parseSpeakerCount(prompt string) int {
+	const key = "speakers="
+	i := strings.Index(prompt, key)
+	if i < 0 {
+		return 0
+	}
+	rest := prompt[i+len(key):]
+	j := 0
+	for j < len(rest) && rest[j] >= '0' && rest[j] <= '9' {
+		j++
+	}
+	if j == 0 {
+		return 0
+	}
+	n, _ := strconv.Atoi(rest[:j])
+	return n
+}
 
 // validLangs is the set of ISO 639-1 codes supported by Parakeet V3.
 var validLangs = map[string]bool{
@@ -248,11 +270,17 @@ func handleTranscription(pool *recognizer.Pool, cfg config.Config, m *observe.Me
 
 		// Diarization is opt-in per request via the model name (the only field
 		// that survives the LiteLLM proxy): the diarize model alias triggers it.
-		diarize := cfg.DiarizeModel != "" && r.FormValue("model") == cfg.DiarizeModel
+		// A speaker-count hint rides in the standard "prompt" field (also
+		// forwarded by LiteLLM) as "speakers=N"; a count of 1..4 routes to the
+		// fast diarizer (Sortformer), otherwise pyannote handles any count.
+		diar := recognizer.DiarizeOptions{
+			Enabled:      cfg.DiarizeModel != "" && r.FormValue("model") == cfg.DiarizeModel,
+			SpeakerCount: parseSpeakerCount(r.FormValue("prompt")),
+		}
 
 		// Inference
 		_, inferSpan := tracer.Start(ctx, "model.inference")
-		result, err := pool.Transcribe(ctx, samples, sampleRate, diarize)
+		result, err := pool.Transcribe(ctx, samples, sampleRate, diar)
 		inferSpan.End()
 
 		if err != nil {

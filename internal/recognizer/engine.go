@@ -25,13 +25,23 @@ type SpeakerTurn struct {
 	Text    string
 }
 
+// DiarizeOptions controls speaker diarization for a single request.
+type DiarizeOptions struct {
+	// Enabled requests speaker labels (set when the diarize model alias is used).
+	Enabled bool
+	// SpeakerCount is a caller-provided hint (0 = unknown). A count of 1..4
+	// routes to the fast diarizer (Sortformer); anything else uses the
+	// general-purpose diarizer (pyannote), which handles arbitrary counts.
+	SpeakerCount int
+}
+
 // Engine is the port for speech recognition backends.
 // Implementations must be safe for sequential use (the Pool serializes access).
 type Engine interface {
 	// Transcribe runs speech recognition on the given audio samples. When
-	// diarize is true and a diarization backend is configured, the audio is
-	// split into per-speaker turns first and the result carries speaker labels.
-	Transcribe(ctx context.Context, samples []float32, sampleRate int, diarize bool) (*TranscriptionResult, error)
+	// diar.Enabled and a diarization backend is configured, the audio is split
+	// into per-speaker turns first and the result carries speaker labels.
+	Transcribe(ctx context.Context, samples []float32, sampleRate int, diar DiarizeOptions) (*TranscriptionResult, error)
 
 	// Close releases all resources held by the engine.
 	Close()
@@ -53,8 +63,14 @@ type Config struct {
 	Language   string // ISO-639-1 hint (used by Whisper/SenseVoice, ignored by Parakeet)
 	VadModel   string // optional Silero VAD model path; enables VAD segmentation
 
-	// DiarizeURL is the speaker-diarization service endpoint (e.g.
-	// http://localhost:8011/diarize). When set, a request may opt into
-	// diarization; the audio is split into per-speaker turns before recognition.
+	// DiarizeURL is the general-purpose speaker-diarization service endpoint
+	// (pyannote, e.g. http://localhost:8011/diarize). When set, a request may
+	// opt into diarization; the audio is split into per-speaker turns before
+	// recognition. Handles arbitrary speaker counts.
 	DiarizeURL string
+
+	// FastDiarizeURL is the fast diarization service endpoint (Sortformer, e.g.
+	// http://localhost:8012/diarize). Used instead of DiarizeURL when the caller
+	// supplies a speaker-count hint of 1..4. Optional; falls back to DiarizeURL.
+	FastDiarizeURL string
 }

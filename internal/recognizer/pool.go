@@ -44,11 +44,11 @@ func NewPool(factory EngineFactory, cfg Config, n int) (*Pool, error) {
 }
 
 // Transcribe borrows an engine from the pool, runs inference, and returns it.
-func (p *Pool) Transcribe(ctx context.Context, samples []float32, sampleRate int, diarize bool) (*TranscriptionResult, error) {
+func (p *Pool) Transcribe(ctx context.Context, samples []float32, sampleRate int, diar DiarizeOptions) (*TranscriptionResult, error) {
 	select {
 	case eng := <-p.instances:
 		defer func() { p.instances <- eng }()
-		return eng.Transcribe(ctx, samples, sampleRate, diarize)
+		return eng.Transcribe(ctx, samples, sampleRate, diar)
 	case <-ctx.Done():
 		return nil, fmt.Errorf("pool: all %d instances busy: %w", p.size, ctx.Err())
 	}

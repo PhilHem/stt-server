@@ -61,8 +61,8 @@ func New(endpoint string) (recognizer.Engine, error) {
 }
 
 // Transcribe sends audio samples to the remote inference server.
-// Transcribe ignores diarize: the gRPC backend does not support diarization.
-func (e *Engine) Transcribe(ctx context.Context, samples []float32, sampleRate int, _ bool) (*recognizer.TranscriptionResult, error) {
+// Transcribe ignores diarization: the gRPC backend does not support it.
+func (e *Engine) Transcribe(ctx context.Context, samples []float32, sampleRate int, _ recognizer.DiarizeOptions) (*recognizer.TranscriptionResult, error) {
 	if len(samples) == 0 {
 		return &recognizer.TranscriptionResult{Duration: 0}, nil
 	}

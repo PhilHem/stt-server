@@ -20,6 +20,7 @@ type Engine struct {
 	inner     *sherpa.OfflineRecognizer
 	vad       *sherpa.VoiceActivityDetector // nil unless a VAD model is configured
 	diar      *httpDiarizer                 // nil unless a diarization service is configured
+	fastDiar  *httpDiarizer                 // nil unless a fast (Sortformer) service is configured
 	mu        sync.Mutex
 	wg        sync.WaitGroup
 	closed    bool
@@ -61,17 +62,23 @@ func New(cfg recognizer.Config) (recognizer.Engine, error) {
 	}
 
 	// Optional speaker diarization via an external GPU service. When configured,
-	// a request can opt in (see Transcribe's diarize flag).
+	// a request can opt in (see Transcribe's diar options). The general-purpose
+	// diarizer (pyannote) handles arbitrary speaker counts; the fast diarizer
+	// (Sortformer) is used when the caller hints 1..4 speakers.
 	if cfg.DiarizeURL != "" {
 		eng.diar = newHTTPDiarizer(cfg.DiarizeURL)
 		slog.Info("speaker diarization available", "url", cfg.DiarizeURL)
+	}
+	if cfg.FastDiarizeURL != "" {
+		eng.fastDiar = newHTTPDiarizer(cfg.FastDiarizeURL)
+		slog.Info("fast speaker diarization available", "url", cfg.FastDiarizeURL)
 	}
 
 	return eng, nil
 }
 
 // Transcribe runs speech recognition on the given audio samples.
-func (e *Engine) Transcribe(ctx context.Context, samples []float32, sampleRate int, diarize bool) (*recognizer.TranscriptionResult, error) {
+func (e *Engine) Transcribe(ctx context.Context, samples []float32, sampleRate int, diar recognizer.DiarizeOptions) (*recognizer.TranscriptionResult, error) {
 	if len(samples) == 0 {
 		return &recognizer.TranscriptionResult{Duration: 0}, nil
 	}
@@ -100,8 +107,8 @@ func (e *Engine) Transcribe(ctx context.Context, samples []float32, sampleRate i
 		// batches so the encoder runs on the GPU with full occupancy.
 		var segs []segment
 		diarized := false
-		if diarize && e.diar != nil {
-			if ds, err := e.diar.segments(ctx, samples, sampleRate); err != nil {
+		if diarizer := e.pickDiarizer(diar); diarizer != nil {
+			if ds, err := diarizer.segments(ctx, samples, sampleRate); err != nil {
 				// Don't fail the whole request on a diarization hiccup — fall back
 				// to a plain transcript without speaker labels.
 				slog.Warn("diarization failed; transcribing without speakers", "error", err)
@@ -135,6 +142,20 @@ func (e *Engine) Transcribe(ctx context.Context, samples []float32, sampleRate i
 	case r := <-ch:
 		return r.res, nil
 	}
+}
+
+// pickDiarizer chooses the diarization backend for a request, or nil when
+// diarization is not requested/available. A caller-supplied hint of 1..4
+// speakers prefers the fast diarizer (Sortformer); otherwise the
+// general-purpose diarizer (pyannote) handles arbitrary counts.
+func (e *Engine) pickDiarizer(diar recognizer.DiarizeOptions) *httpDiarizer {
+	if !diar.Enabled {
+		return nil
+	}
+	if diar.SpeakerCount >= 1 && diar.SpeakerCount <= 4 && e.fastDiar != nil {
+		return e.fastDiar
+	}
+	return e.diar
 }
 
 // maxBatch bounds how many segments are decoded in one batched call. The batch
