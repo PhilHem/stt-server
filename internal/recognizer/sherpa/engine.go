@@ -18,7 +18,8 @@ import (
 // for them before destroying the C object (prevents use-after-free).
 type Engine struct {
 	inner     *sherpa.OfflineRecognizer
-	vad       *sherpa.VoiceActivityDetector // nil unless a VAD model is configured
+	vad       *sherpa.VoiceActivityDetector     // nil unless a VAD model is configured
+	diarizer  *sherpa.OfflineSpeakerDiarization // nil unless diarization models are configured
 	mu        sync.Mutex
 	wg        sync.WaitGroup
 	closed    bool
@@ -59,6 +60,21 @@ func New(cfg recognizer.Config) (recognizer.Engine, error) {
 		slog.Info("VAD segmentation enabled", "model", cfg.VadModel)
 	}
 
+	// Optional speaker diarization: when both models are present, audio is
+	// split into per-speaker turns (which also serve as recognition segments).
+	if cfg.SegmentationModel != "" && cfg.EmbeddingModel != "" {
+		d := newDiarizer(cfg.SegmentationModel, cfg.EmbeddingModel, cfg.Provider, cfg.NumThreads)
+		if d == nil {
+			if eng.vad != nil {
+				sherpa.DeleteVoiceActivityDetector(eng.vad)
+			}
+			sherpa.DeleteOfflineRecognizer(r)
+			return nil, fmt.Errorf("failed to create diarizer from %s + %s", cfg.SegmentationModel, cfg.EmbeddingModel)
+		}
+		eng.diarizer = d
+		slog.Info("speaker diarization enabled", "segmentation", cfg.SegmentationModel, "embedding", cfg.EmbeddingModel)
+	}
+
 	return eng, nil
 }
 
@@ -85,16 +101,23 @@ func (e *Engine) Transcribe(ctx context.Context, samples []float32, sampleRate i
 		}
 
 		// Long audio is segmented before recognition; the offline recognizer
-		// crashes on a single very long utterance. With a VAD the cuts land on
-		// real speech boundaries (silence dropped); otherwise we fall back to
-		// fixed windows cut at the quietest point. Segments are then decoded in
+		// crashes on a single very long utterance. Diarization (when configured)
+		// splits on per-speaker turns and tags each segment with its speaker; a
+		// VAD splits on speech boundaries; otherwise we fall back to fixed
+		// windows cut at the quietest point. Segments are then decoded in
 		// batches so the encoder runs on the GPU with full occupancy.
 		var segs []segment
-		if e.vad != nil {
+		switch {
+		case e.diarizer != nil:
+			segs = diarize(e.diarizer, samples, sampleRate)
+		case e.vad != nil:
 			segs = segmentByVAD(e.vad, samples)
-		} else {
+			for i := range segs {
+				segs[i].speaker = -1
+			}
+		default:
 			for _, w := range splitWindows(samples, sampleRate, chunkTargetSeconds, chunkSearchSeconds) {
-				segs = append(segs, segment{start: w.start, samples: samples[w.start:w.end]})
+				segs = append(segs, segment{start: w.start, samples: samples[w.start:w.end], speaker: -1})
 			}
 		}
 
@@ -119,10 +142,16 @@ const maxBatch = 16
 // runs once per batch on the GPU) and joins the results in chronological order.
 // Per-segment token timestamps are shifted onto the original timeline.
 func (e *Engine) decodeBatched(ctx context.Context, segs []segment, sampleRate int) *recognizer.TranscriptionResult {
+	type decoded struct {
+		speaker    int
+		start, end float32
+		text       string
+	}
 	var (
 		texts      []string
 		tokens     []string
 		timestamps []float32
+		results    []decoded
 		lang       string
 		inferTotal time.Duration
 	)
@@ -147,19 +176,44 @@ func (e *Engine) decodeBatched(ctx context.Context, segs []segment, sampleRate i
 		for i, st := range streams {
 			out := st.GetResult()
 			if out != nil {
-				if t := strings.TrimSpace(out.Text); t != "" {
-					texts = append(texts, t)
+				sg := batch[i]
+				text := strings.TrimSpace(out.Text)
+				if text != "" {
+					texts = append(texts, text)
 				}
 				if lang == "" {
 					lang = out.Lang
 				}
 				tokens = append(tokens, out.Tokens...)
-				offset := float32(batch[i].start) / float32(sampleRate)
+				offset := float32(sg.start) / float32(sampleRate)
 				for _, ts := range out.Timestamps {
 					timestamps = append(timestamps, ts+offset)
 				}
+				results = append(results, decoded{
+					speaker: sg.speaker,
+					start:   offset,
+					end:     float32(sg.start+len(sg.samples)) / float32(sampleRate),
+					text:    text,
+				})
 			}
 			sherpa.DeleteOfflineStream(st)
+		}
+	}
+
+	// Merge consecutive same-speaker segments into turns. Only when diarization
+	// ran (speaker >= 0); otherwise there are no per-speaker turns to report.
+	var turns []recognizer.SpeakerTurn
+	for _, d := range results {
+		if d.speaker < 0 || d.text == "" {
+			continue
+		}
+		if n := len(turns); n > 0 && turns[n-1].Speaker == d.speaker {
+			turns[n-1].Text += " " + d.text
+			turns[n-1].End = d.end
+		} else {
+			turns = append(turns, recognizer.SpeakerTurn{
+				Speaker: d.speaker, Start: d.start, End: d.end, Text: d.text,
+			})
 		}
 	}
 
@@ -169,6 +223,7 @@ func (e *Engine) decodeBatched(ctx context.Context, segs []segment, sampleRate i
 		InferenceTime: inferTotal,
 		Tokens:        tokens,
 		Timestamps:    timestamps,
+		Segments:      turns,
 	}
 }
 
@@ -190,6 +245,9 @@ func (e *Engine) Close() {
 		sherpa.DeleteOfflineRecognizer(e.inner)
 		if e.vad != nil {
 			sherpa.DeleteVoiceActivityDetector(e.vad)
+		}
+		if e.diarizer != nil {
+			sherpa.DeleteOfflineSpeakerDiarization(e.diarizer)
 		}
 	case <-time.After(30 * time.Second):
 		// Goroutines still running inside CGo. Freeing e.inner would cause

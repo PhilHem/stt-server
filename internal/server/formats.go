@@ -4,7 +4,31 @@ import (
 	"fmt"
 	"math"
 	"strings"
+
+	"github.com/PhilHem/stt-server/internal/recognizer"
 )
+
+// SpeakerTurn is the wire form of a diarization turn: a stretch of speech by
+// one (anonymous, zero-based) speaker.
+type SpeakerTurn struct {
+	Speaker int     `json:"speaker"`
+	Start   float32 `json:"start"`
+	End     float32 `json:"end"`
+	Text    string  `json:"text"`
+}
+
+// speakerTurns converts domain turns to the wire form; returns nil when
+// diarization did not run.
+func speakerTurns(turns []recognizer.SpeakerTurn) []SpeakerTurn {
+	if len(turns) == 0 {
+		return nil
+	}
+	out := make([]SpeakerTurn, len(turns))
+	for i, t := range turns {
+		out[i] = SpeakerTurn{Speaker: t.Speaker, Start: t.Start, End: t.End, Text: t.Text}
+	}
+	return out
+}
 
 // Word represents a single word with timing information.
 type Word struct {

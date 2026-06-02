@@ -17,10 +17,12 @@ const (
 )
 
 // segment is a span of audio to transcribe, tagged with its sample offset on
-// the original timeline so token timestamps can be shifted back.
+// the original timeline so token timestamps can be shifted back. speaker is the
+// diarization speaker index, or -1 when diarization did not run.
 type segment struct {
 	start   int
 	samples []float32
+	speaker int
 }
 
 // newVAD builds a Silero voice-activity detector from a model file. Returns

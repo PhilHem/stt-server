@@ -330,6 +330,9 @@ func handleTranscription(pool *recognizer.Pool, cfg config.Config, m *observe.Me
 				resp["words"] = words
 				resp["segments"] = segments
 			}
+			if s := speakerTurns(result.Segments); len(s) > 0 {
+				resp["speakers"] = s
+			}
 			json.NewEncoder(w).Encode(resp)
 		case "srt":
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -339,9 +342,11 @@ func handleTranscription(pool *recognizer.Pool, cfg config.Config, m *observe.Me
 			fmt.Fprint(w, formatVTT(segments))
 		default:
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{
-				"text": result.Text,
-			})
+			resp := map[string]any{"text": result.Text}
+			if s := speakerTurns(result.Segments); len(s) > 0 {
+				resp["speakers"] = s
+			}
+			json.NewEncoder(w).Encode(resp)
 		}
 	}
 }

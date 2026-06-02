@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.6.0 - 2026-06-02
+
+### Added
+
+- Optional speaker diarization (`STT_SEGMENTATION_MODEL` + `STT_EMBEDDING_MODEL`): audio is split into per-speaker turns and the response carries them under `speakers`.
+
 ## v0.5.2 - 2026-06-02
 
 ### Fixed
