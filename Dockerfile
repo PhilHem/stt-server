@@ -31,7 +31,7 @@ RUN ./configure \
     --enable-static --disable-shared \
     --enable-protocol=file,pipe \
     --enable-demuxer=mp3,flac,ogg,mov,wav,aac,matroska,webm \
-    --enable-decoder=mp3,mp3float,flac,vorbis,opus,aac,pcm_s16le,pcm_s16be,pcm_f32le,pcm_f32be,pcm_mulaw,pcm_alaw \
+    --enable-decoder=mp3,mp3float,flac,vorbis,opus,aac,alac,pcm_s16le,pcm_s16be,pcm_f32le,pcm_f32be,pcm_mulaw,pcm_alaw \
     --enable-parser=mp3,flac,vorbis,opus,aac \
     --enable-muxer=pcm_s16le \
     --enable-encoder=pcm_s16le \

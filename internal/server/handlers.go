@@ -212,7 +212,8 @@ func handleTranscription(pool *recognizer.Pool, cfg config.Config, m *observe.Me
 		// Convert to 16kHz mono PCM via ffmpeg
 		_, decodeSpan := tracer.Start(ctx, "audio.decode")
 		decodeStart := time.Now()
-		samples, sampleRate, err := audio.Decode(ctx, audioData, header.Filename)
+		maxSamples := int(cfg.MaxAudioDuration.Seconds()) * audio.TargetSampleRate
+		samples, sampleRate, err := audio.Decode(ctx, audioData, header.Filename, maxSamples)
 		decodeElapsed := time.Since(decodeStart)
 		decodeSpan.End()
 

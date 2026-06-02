@@ -40,3 +40,40 @@ func TestPcmToFloat32_Empty(t *testing.T) {
 		t.Errorf("expected 0 samples for empty input, got %d", len(samples))
 	}
 }
+
+func TestInputExt(t *testing.T) {
+	cases := map[string]string{
+		"Microphone (2026-03-12 09.25.05).m4a": ".m4a",
+		"recording.MP3":                        ".mp3",
+		"clip.wav":                             ".wav",
+		"no-extension":                         "",
+		"":                                     "",
+		"weird.name.flac":                      ".flac",
+		"trailing.dot.":                        "",
+		"too.longextension":                    "", // > 8 chars after the dot
+		"bad.ex!t":                             "", // non-alphanumeric
+		"archive.tar.gz":                       ".gz",
+	}
+	for filename, want := range cases {
+		if got := inputExt(filename); got != want {
+			t.Errorf("inputExt(%q) = %q, want %q", filename, got, want)
+		}
+	}
+}
+
+func TestDecodedByteBudget(t *testing.T) {
+	// A positive budget gets one second of headroom, two bytes per sample.
+	maxSamples := 600 * TargetSampleRate
+	want := (maxSamples + TargetSampleRate) * bytesPerSample
+	if got := decodedByteBudget(maxSamples); got != want {
+		t.Errorf("decodedByteBudget(%d) = %d, want %d", maxSamples, got, want)
+	}
+
+	// Zero or negative falls back to the default cap (plus the same headroom).
+	wantFallback := (fallbackMaxSamples + TargetSampleRate) * bytesPerSample
+	for _, in := range []int{0, -1} {
+		if got := decodedByteBudget(in); got != wantFallback {
+			t.Errorf("decodedByteBudget(%d) = %d, want fallback %d", in, got, wantFallback)
+		}
+	}
+}

@@ -8,15 +8,37 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 )
 
 // TargetSampleRate is the sample rate used for all decoded audio.
 const TargetSampleRate = 16000
 
-// maxDecodedBytes caps ffmpeg output to prevent memory bombs from compressed audio.
-// 600s * 16kHz * 2 bytes/sample = 19.2 MB; use 25 MB with headroom.
-const maxDecodedBytes = 25 << 20
+// bytesPerSample is the size of one decoded sample (16-bit little-endian PCM).
+const bytesPerSample = 2
+
+// decodeHeadroomSamples is added on top of the caller's sample budget so that
+// audio which is only slightly over the configured duration still decodes and
+// is rejected by the caller's precise duration check (with a friendly 413)
+// rather than being silently truncated here. One second of headroom.
+const decodeHeadroomSamples = TargetSampleRate
+
+// fallbackMaxSamples caps ffmpeg output when the caller passes no budget
+// (maxSamples <= 0), guarding against memory bombs from compressed audio.
+// 600s * 16kHz = 9.6M samples.
+const fallbackMaxSamples = 600 * TargetSampleRate
+
+// decodedByteBudget converts a sample budget into the ffmpeg output byte cap,
+// applying headroom and the no-budget fallback.
+func decodedByteBudget(maxSamples int) int {
+	if maxSamples <= 0 {
+		maxSamples = fallbackMaxSamples
+	}
+	return (maxSamples + decodeHeadroomSamples) * bytesPerSample
+}
 
 // audioMagic maps recognized audio format signatures to their names.
 // Checked against the first bytes of the input to reject non-audio data.
@@ -73,13 +95,41 @@ func IsKnownFormat(data []byte) bool {
 }
 
 // Decode converts any audio format to 16kHz mono float32 PCM via ffmpeg.
-func Decode(ctx context.Context, data []byte, filename string) ([]float32, int, error) {
+// maxSamples bounds the decoded output so a small compressed file cannot
+// expand into an unbounded PCM buffer; pass 0 to use the default cap. The cap
+// carries one second of headroom over maxSamples so the caller's own duration
+// check is what rejects slightly-too-long audio.
+func Decode(ctx context.Context, data []byte, filename string, maxSamples int) ([]float32, int, error) {
 	if !IsKnownFormat(data) {
 		return nil, 0, fmt.Errorf("unsupported audio format")
 	}
 
+	maxDecodedBytes := decodedByteBudget(maxSamples)
+
+	// Stage the upload in a temp file rather than feeding ffmpeg's stdin. The
+	// MP4/M4A container keeps its `moov` index atom at the end of the file, so
+	// ffmpeg must seek backwards to decode it — impossible on a stdin pipe,
+	// which is why piped m4a/mov produced no output. A regular file is
+	// seekable and decodes every supported container uniformly.
+	tmp, err := os.CreateTemp("", "stt-decode-*"+inputExt(filename))
+	if err != nil {
+		slog.Debug("temp file create failed", "error", err)
+		return nil, 0, fmt.Errorf("audio decode failed")
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		slog.Debug("temp file write failed", "error", err)
+		return nil, 0, fmt.Errorf("audio decode failed")
+	}
+	if err := tmp.Close(); err != nil {
+		slog.Debug("temp file close failed", "error", err)
+		return nil, 0, fmt.Errorf("audio decode failed")
+	}
+
 	cmd := exec.CommandContext(ctx, "ffmpeg",
-		"-i", "pipe:0", // read from stdin
+		"-nostdin",       // never block reading the controlling terminal
+		"-i", tmp.Name(), // seekable input file (lets ffmpeg read the moov atom)
 		"-ar", "16000", // resample to 16kHz
 		"-ac", "1", // mono
 		"-f", "s16le", // raw 16-bit little-endian PCM
@@ -87,8 +137,6 @@ func Decode(ctx context.Context, data []byte, filename string) ([]float32, int, 
 		"-v", "error", // suppress banner
 		"pipe:1", // write to stdout
 	)
-
-	cmd.Stdin = bytes.NewReader(data)
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
@@ -104,7 +152,7 @@ func Decode(ctx context.Context, data []byte, filename string) ([]float32, int, 
 	}
 
 	// Read up to maxDecodedBytes + 1 to detect overflow
-	limitedReader := io.LimitReader(stdoutPipe, maxDecodedBytes+1)
+	limitedReader := io.LimitReader(stdoutPipe, int64(maxDecodedBytes)+1)
 	raw, err := io.ReadAll(limitedReader)
 	if err != nil {
 		_ = cmd.Process.Kill()
@@ -130,6 +178,23 @@ func Decode(ctx context.Context, data []byte, filename string) ([]float32, int, 
 
 	samples := pcmToFloat32(raw)
 	return samples, TargetSampleRate, nil
+}
+
+// inputExt returns the lower-cased extension (with leading dot) of the
+// original upload filename so the temp file keeps a hint ffmpeg's demuxer can
+// use. Returns "" when the name has no plausible extension; ffmpeg falls back
+// to content probing in that case.
+func inputExt(filename string) string {
+	ext := strings.ToLower(filepath.Ext(filename))
+	if len(ext) < 2 || len(ext) > 8 {
+		return ""
+	}
+	for _, r := range ext[1:] {
+		if !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') {
+			return ""
+		}
+	}
+	return ext
 }
 
 // limitedBuffer is a writer that silently discards data after max bytes.

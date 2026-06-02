@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.4.2 - 2026-06-02
+
+### Fixed
+
+- Audio in MP4/M4A containers, including macOS and iPhone voice recordings, is transcribed.
+
+### Changed
+
+- Audio up to the full configured maximum duration is accepted.
+
+### Added
+
+- Apple Lossless (ALAC) audio is accepted for transcription.
+
 ## v0.4.1 - 2026-03-26
 
 ### Added
