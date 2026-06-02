@@ -14,6 +14,13 @@ const (
 	vadMinSpeech  = 0.25 // seconds; drop blips shorter than this
 	vadMaxSpeech  = 20.0 // seconds; force a cut in long monologues
 	vadBufferSecs = 30.0 // detector ring-buffer capacity
+
+	// vadFeedSamples is how much audio is handed to the detector per call. The
+	// detector buffers internally and processes vadWindowSize frames as they
+	// accumulate, so feeding large blocks (5 s here) keeps the cgo crossing
+	// count low — feeding one window at a time costs tens of thousands of calls
+	// on a long recording.
+	vadFeedSamples = vadSampleRate * 5
 )
 
 // segment is a span of audio to transcribe, tagged with its sample offset on
@@ -57,8 +64,8 @@ func segmentByVAD(vad *sherpa.VoiceActivityDetector, samples []float32) []segmen
 		}
 	}
 
-	for off := 0; off < len(samples); off += vadWindowSize {
-		end := off + vadWindowSize
+	for off := 0; off < len(samples); off += vadFeedSamples {
+		end := off + vadFeedSamples
 		if end > len(samples) {
 			end = len(samples)
 		}

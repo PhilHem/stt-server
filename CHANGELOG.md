@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.5.1 - 2026-06-02
+
+### Fixed
+
+- Voice-activity segmentation of long recordings is fast again.
+
 ## v0.5.0 - 2026-06-02
 
 ### Added
