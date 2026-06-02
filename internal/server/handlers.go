@@ -246,9 +246,13 @@ func handleTranscription(pool *recognizer.Pool, cfg config.Config, m *observe.Me
 			return
 		}
 
+		// Diarization is opt-in per request via the model name (the only field
+		// that survives the LiteLLM proxy): the diarize model alias triggers it.
+		diarize := cfg.DiarizeModel != "" && r.FormValue("model") == cfg.DiarizeModel
+
 		// Inference
 		_, inferSpan := tracer.Start(ctx, "model.inference")
-		result, err := pool.Transcribe(ctx, samples, sampleRate)
+		result, err := pool.Transcribe(ctx, samples, sampleRate, diarize)
 		inferSpan.End()
 
 		if err != nil {

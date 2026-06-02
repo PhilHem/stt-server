@@ -18,8 +18,8 @@ import (
 // for them before destroying the C object (prevents use-after-free).
 type Engine struct {
 	inner     *sherpa.OfflineRecognizer
-	vad       *sherpa.VoiceActivityDetector     // nil unless a VAD model is configured
-	diarizer  *sherpa.OfflineSpeakerDiarization // nil unless diarization models are configured
+	vad       *sherpa.VoiceActivityDetector // nil unless a VAD model is configured
+	diar      *httpDiarizer                 // nil unless a diarization service is configured
 	mu        sync.Mutex
 	wg        sync.WaitGroup
 	closed    bool
@@ -60,26 +60,18 @@ func New(cfg recognizer.Config) (recognizer.Engine, error) {
 		slog.Info("VAD segmentation enabled", "model", cfg.VadModel)
 	}
 
-	// Optional speaker diarization: when both models are present, audio is
-	// split into per-speaker turns (which also serve as recognition segments).
-	if cfg.SegmentationModel != "" && cfg.EmbeddingModel != "" {
-		d := newDiarizer(cfg.SegmentationModel, cfg.EmbeddingModel, cfg.Provider, cfg.NumThreads)
-		if d == nil {
-			if eng.vad != nil {
-				sherpa.DeleteVoiceActivityDetector(eng.vad)
-			}
-			sherpa.DeleteOfflineRecognizer(r)
-			return nil, fmt.Errorf("failed to create diarizer from %s + %s", cfg.SegmentationModel, cfg.EmbeddingModel)
-		}
-		eng.diarizer = d
-		slog.Info("speaker diarization enabled", "segmentation", cfg.SegmentationModel, "embedding", cfg.EmbeddingModel)
+	// Optional speaker diarization via an external GPU service. When configured,
+	// a request can opt in (see Transcribe's diarize flag).
+	if cfg.DiarizeURL != "" {
+		eng.diar = newHTTPDiarizer(cfg.DiarizeURL)
+		slog.Info("speaker diarization available", "url", cfg.DiarizeURL)
 	}
 
 	return eng, nil
 }
 
 // Transcribe runs speech recognition on the given audio samples.
-func (e *Engine) Transcribe(ctx context.Context, samples []float32, sampleRate int) (*recognizer.TranscriptionResult, error) {
+func (e *Engine) Transcribe(ctx context.Context, samples []float32, sampleRate int, diarize bool) (*recognizer.TranscriptionResult, error) {
 	if len(samples) == 0 {
 		return &recognizer.TranscriptionResult{Duration: 0}, nil
 	}
@@ -107,9 +99,20 @@ func (e *Engine) Transcribe(ctx context.Context, samples []float32, sampleRate i
 		// windows cut at the quietest point. Segments are then decoded in
 		// batches so the encoder runs on the GPU with full occupancy.
 		var segs []segment
+		diarized := false
+		if diarize && e.diar != nil {
+			if ds, err := e.diar.segments(ctx, samples, sampleRate); err != nil {
+				// Don't fail the whole request on a diarization hiccup — fall back
+				// to a plain transcript without speaker labels.
+				slog.Warn("diarization failed; transcribing without speakers", "error", err)
+			} else {
+				segs = ds
+				diarized = true
+			}
+		}
 		switch {
-		case e.diarizer != nil:
-			segs = diarize(e.diarizer, samples, sampleRate)
+		case diarized:
+			// segs already built (per-speaker turns)
 		case e.vad != nil:
 			segs = segmentByVAD(e.vad, samples)
 			for i := range segs {
@@ -245,9 +248,6 @@ func (e *Engine) Close() {
 		sherpa.DeleteOfflineRecognizer(e.inner)
 		if e.vad != nil {
 			sherpa.DeleteVoiceActivityDetector(e.vad)
-		}
-		if e.diarizer != nil {
-			sherpa.DeleteOfflineSpeakerDiarization(e.diarizer)
 		}
 	case <-time.After(30 * time.Second):
 		// Goroutines still running inside CGo. Freeing e.inner would cause

@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.7.0 - 2026-06-02
+
+### Added
+
+- Per-request speaker diarization via an external GPU service (`STT_DIARIZE_URL`): a request whose model name matches `STT_DIARIZE_MODEL` is split into per-speaker turns and labelled, while other requests transcribe unchanged.
+
+### Removed
+
+- The in-process CPU diarizer and its `STT_SEGMENTATION_MODEL` / `STT_EMBEDDING_MODEL` options (it was too slow); diarization now runs in the dedicated service.
+
 ## v0.6.1 - 2026-06-02
 
 ### Changed

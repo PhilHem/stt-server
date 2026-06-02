@@ -28,8 +28,10 @@ type SpeakerTurn struct {
 // Engine is the port for speech recognition backends.
 // Implementations must be safe for sequential use (the Pool serializes access).
 type Engine interface {
-	// Transcribe runs speech recognition on the given audio samples.
-	Transcribe(ctx context.Context, samples []float32, sampleRate int) (*TranscriptionResult, error)
+	// Transcribe runs speech recognition on the given audio samples. When
+	// diarize is true and a diarization backend is configured, the audio is
+	// split into per-speaker turns first and the result carries speaker labels.
+	Transcribe(ctx context.Context, samples []float32, sampleRate int, diarize bool) (*TranscriptionResult, error)
 
 	// Close releases all resources held by the engine.
 	Close()
@@ -51,8 +53,8 @@ type Config struct {
 	Language   string // ISO-639-1 hint (used by Whisper/SenseVoice, ignored by Parakeet)
 	VadModel   string // optional Silero VAD model path; enables VAD segmentation
 
-	// SegmentationModel and EmbeddingModel together enable speaker diarization:
-	// audio is split into per-speaker turns before recognition. Both must be set.
-	SegmentationModel string // pyannote segmentation ONNX path
-	EmbeddingModel    string // speaker-embedding ONNX path
+	// DiarizeURL is the speaker-diarization service endpoint (e.g.
+	// http://localhost:8011/diarize). When set, a request may opt into
+	// diarization; the audio is split into per-speaker turns before recognition.
+	DiarizeURL string
 }

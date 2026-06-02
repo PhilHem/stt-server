@@ -25,7 +25,7 @@ import (
 
 func main() {
 	var modelName, cacheDir, logFormat, logLevel, otelEndpoint, backend, grpcEndpoint, vadModel string
-	var segModel, embModel string
+	var diarURL string
 	var maxAudioSec, requestTimeoutSec int
 	var showVersion bool
 	cfg := config.Config{}
@@ -33,8 +33,8 @@ func main() {
 	flag.BoolVar(&showVersion, "version", false, "Print version and exit")
 	flag.StringVar(&modelName, "model", config.EnvOr("STT_MODEL", ""), "Model name or path (env: STT_MODEL)")
 	flag.StringVar(&vadModel, "vad-model", config.EnvOr("STT_VAD_MODEL", ""), "Path to a Silero VAD model; enables VAD-based segmentation (env: STT_VAD_MODEL)")
-	flag.StringVar(&segModel, "segmentation-model", config.EnvOr("STT_SEGMENTATION_MODEL", ""), "Path to a pyannote segmentation model; with --embedding-model enables speaker diarization (env: STT_SEGMENTATION_MODEL)")
-	flag.StringVar(&embModel, "embedding-model", config.EnvOr("STT_EMBEDDING_MODEL", ""), "Path to a speaker-embedding model; with --segmentation-model enables speaker diarization (env: STT_EMBEDDING_MODEL)")
+	flag.StringVar(&diarURL, "diarize-url", config.EnvOr("STT_DIARIZE_URL", ""), "Speaker-diarization service endpoint; enables opt-in diarization (env: STT_DIARIZE_URL)")
+	flag.StringVar(&cfg.DiarizeModel, "diarize-model", config.EnvOr("STT_DIARIZE_MODEL", ""), "Request model name that opts into diarization (env: STT_DIARIZE_MODEL)")
 	flag.StringVar(&cacheDir, "cache-dir", config.EnvOr("STT_CACHE_DIR", ""), "Model cache directory (env: STT_CACHE_DIR)")
 	flag.IntVar(&cfg.Port, "port", config.EnvInt("STT_PORT", 8000), "HTTP listen port (env: STT_PORT)")
 	flag.IntVar(&cfg.NumThreads, "num-threads", config.EnvInt("STT_NUM_THREADS", runtime.NumCPU()), "Inference threads (env: STT_NUM_THREADS)")
@@ -87,7 +87,7 @@ func main() {
 	}
 
 	// Select inference backend and create pool
-	pool, poolErr := createPool(backend, modelName, cacheDir, grpcEndpoint, vadModel, segModel, embModel, &cfg)
+	pool, poolErr := createPool(backend, modelName, cacheDir, grpcEndpoint, vadModel, diarURL, &cfg)
 	if poolErr != nil {
 		slog.Error("failed to create inference pool", "error", poolErr)
 		os.Exit(1)
@@ -142,7 +142,7 @@ func main() {
 	slog.Info("server stopped gracefully")
 }
 
-func createPool(backend, modelName, cacheDir, grpcEndpoint, vadModel, segModel, embModel string, cfg *config.Config) (*recognizer.Pool, error) {
+func createPool(backend, modelName, cacheDir, grpcEndpoint, vadModel, diarURL string, cfg *config.Config) (*recognizer.Pool, error) {
 	switch backend {
 	case "sherpa-onnx":
 		if modelName == "" {
@@ -154,12 +154,11 @@ func createPool(backend, modelName, cacheDir, grpcEndpoint, vadModel, segModel, 
 		}
 		cfg.ModelDir = modelDir
 		return recognizer.NewPool(sherpaengine.New, recognizer.Config{
-			ModelDir:          cfg.ModelDir,
-			NumThreads:        cfg.NumThreads,
-			Provider:          cfg.Provider,
-			VadModel:          vadModel,
-			SegmentationModel: segModel,
-			EmbeddingModel:    embModel,
+			ModelDir:   cfg.ModelDir,
+			NumThreads: cfg.NumThreads,
+			Provider:   cfg.Provider,
+			VadModel:   vadModel,
+			DiarizeURL: diarURL,
 		}, cfg.PoolSize)
 
 	case "grpc":
