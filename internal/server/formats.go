@@ -17,6 +17,27 @@ type SpeakerTurn struct {
 	Text    string  `json:"text"`
 }
 
+// formatSpeakers renders diarized turns as labelled paragraphs, e.g.
+//
+//	Sprecher 1: ...
+//
+//	Sprecher 2: ...
+//
+// Speaker indices are 1-based for display. label defaults to "Speaker".
+func formatSpeakers(turns []SpeakerTurn, label string) string {
+	if label == "" {
+		label = "Speaker"
+	}
+	var b strings.Builder
+	for i, t := range turns {
+		if i > 0 {
+			b.WriteString("\n\n")
+		}
+		fmt.Fprintf(&b, "%s %d: %s", label, t.Speaker+1, t.Text)
+	}
+	return b.String()
+}
+
 // speakerTurns converts domain turns to the wire form; returns nil when
 // diarization did not run.
 func speakerTurns(turns []recognizer.SpeakerTurn) []SpeakerTurn {

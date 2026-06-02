@@ -50,6 +50,7 @@ func main() {
 	flag.IntVar(&cfg.MaxFileSizeMB, "max-file-size", config.EnvInt("STT_MAX_FILE_SIZE_MB", 100), "Max upload file size in MB (env: STT_MAX_FILE_SIZE_MB)")
 	flag.IntVar(&maxAudioSec, "max-audio-duration", config.EnvInt("STT_MAX_AUDIO_DURATION", 600), "Max audio duration in seconds (env: STT_MAX_AUDIO_DURATION)")
 	flag.IntVar(&requestTimeoutSec, "request-timeout", config.EnvInt("STT_REQUEST_TIMEOUT", 300), "Request timeout in seconds (env: STT_REQUEST_TIMEOUT)")
+	flag.StringVar(&cfg.SpeakerLabel, "speaker-label", config.EnvOr("STT_SPEAKER_LABEL", "Speaker"), "Label prefix for diarized turns in the text (env: STT_SPEAKER_LABEL)")
 	flag.Parse()
 
 	cfg.MaxAudioDuration = time.Duration(maxAudioSec) * time.Second

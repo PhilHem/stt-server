@@ -312,17 +312,27 @@ func handleTranscription(pool *recognizer.Pool, cfg config.Config, m *observe.Me
 			segments = buildSegments(words)
 		}
 
+		// When diarization ran, fold the speaker labels into the text itself.
+		// The LiteLLM proxy in front of this server only forwards the "text"
+		// field, so a separate structured "speakers" array would not reach the
+		// caller — labelled text does.
+		speakers := speakerTurns(result.Segments)
+		displayText := result.Text
+		if len(speakers) > 0 {
+			displayText = formatSpeakers(speakers, cfg.SpeakerLabel)
+		}
+
 		// Response format (OpenAI-compatible)
 		responseFormat := r.FormValue("response_format")
 		switch responseFormat {
 		case "text":
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			fmt.Fprint(w, result.Text)
+			fmt.Fprint(w, displayText)
 		case "verbose_json":
 			w.Header().Set("Content-Type", "application/json")
 			resp := map[string]any{
 				"task":     "transcribe",
-				"text":     result.Text,
+				"text":     displayText,
 				"language": rawLang,
 				"duration": result.Duration,
 			}
@@ -330,8 +340,8 @@ func handleTranscription(pool *recognizer.Pool, cfg config.Config, m *observe.Me
 				resp["words"] = words
 				resp["segments"] = segments
 			}
-			if s := speakerTurns(result.Segments); len(s) > 0 {
-				resp["speakers"] = s
+			if len(speakers) > 0 {
+				resp["speakers"] = speakers
 			}
 			json.NewEncoder(w).Encode(resp)
 		case "srt":
@@ -342,9 +352,9 @@ func handleTranscription(pool *recognizer.Pool, cfg config.Config, m *observe.Me
 			fmt.Fprint(w, formatVTT(segments))
 		default:
 			w.Header().Set("Content-Type", "application/json")
-			resp := map[string]any{"text": result.Text}
-			if s := speakerTurns(result.Segments); len(s) > 0 {
-				resp["speakers"] = s
+			resp := map[string]any{"text": displayText}
+			if len(speakers) > 0 {
+				resp["speakers"] = speakers
 			}
 			json.NewEncoder(w).Encode(resp)
 		}

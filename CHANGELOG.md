@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.6.1 - 2026-06-02
+
+### Changed
+
+- With diarization on, the transcript text is prefixed per turn with the speaker (so speaker labels survive proxies that forward only the text field).
+
+### Added
+
+- `STT_SPEAKER_LABEL` sets the per-turn speaker label prefix (default "Speaker").
+
 ## v0.6.0 - 2026-06-02
 
 ### Added

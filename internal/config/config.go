@@ -19,6 +19,7 @@ type Config struct {
 	MaxFileSizeMB    int
 	MaxAudioDuration time.Duration
 	RequestTimeout   time.Duration
+	SpeakerLabel     string // prefix for diarized turns in the text, e.g. "Speaker" / "Sprecher"
 }
 
 // Validate checks that all configuration values are within acceptable ranges.
