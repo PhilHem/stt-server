@@ -138,8 +138,10 @@ func (e *Engine) Transcribe(ctx context.Context, samples []float32, sampleRate i
 }
 
 // maxBatch bounds how many segments are decoded in one batched call. The batch
-// pads to its longest stream, so this caps peak GPU memory.
-const maxBatch = 16
+// pads to its longest stream and the fp32 encoder's activations scale with
+// batch×length, so this caps peak GPU memory — kept small because the GPU is
+// shared with other models and a failed allocation aborts the process.
+const maxBatch = 6
 
 // decodeBatched decodes the segments in batches via DecodeStreams (the encoder
 // runs once per batch on the GPU) and joins the results in chronological order.

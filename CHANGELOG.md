@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.7.1 - 2026-06-02
+
+### Fixed
+
+- Batched recognition uses smaller batches so the encoder no longer exhausts GPU memory on a shared GPU (which previously aborted the server).
+
 ## v0.7.0 - 2026-06-02
 
 ### Added
