@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.5.0 - 2026-06-02
+
+### Added
+
+- Optional voice-activity segmentation via `STT_VAD_MODEL` (Silero) splits long audio on speech pauses and skips silence.
+
+### Changed
+
+- Long audio is transcribed in batches of segments rather than one window at a time.
+
 ## v0.4.3 - 2026-06-02
 
 ### Fixed

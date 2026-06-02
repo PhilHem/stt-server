@@ -39,4 +39,5 @@ type Config struct {
 	NumThreads int
 	Provider   string // "cpu" or "cuda"
 	Language   string // ISO-639-1 hint (used by Whisper/SenseVoice, ignored by Parakeet)
+	VadModel   string // optional Silero VAD model path; enables VAD segmentation
 }

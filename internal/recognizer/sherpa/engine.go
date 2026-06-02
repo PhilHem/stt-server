@@ -18,6 +18,7 @@ import (
 // for them before destroying the C object (prevents use-after-free).
 type Engine struct {
 	inner     *sherpa.OfflineRecognizer
+	vad       *sherpa.VoiceActivityDetector // nil unless a VAD model is configured
 	mu        sync.Mutex
 	wg        sync.WaitGroup
 	closed    bool
@@ -44,7 +45,21 @@ func New(cfg recognizer.Config) (recognizer.Engine, error) {
 		return nil, fmt.Errorf("sherpa-onnx failed to create recognizer (check model files)")
 	}
 
-	return &Engine{inner: r, modelType: modelType}, nil
+	eng := &Engine{inner: r, modelType: modelType}
+
+	// Optional voice-activity detector: when present, long audio is split on
+	// real speech boundaries instead of by fixed windows.
+	if cfg.VadModel != "" {
+		vad := newVAD(cfg.VadModel)
+		if vad == nil {
+			sherpa.DeleteOfflineRecognizer(r)
+			return nil, fmt.Errorf("failed to create VAD from %s", cfg.VadModel)
+		}
+		eng.vad = vad
+		slog.Info("VAD segmentation enabled", "model", cfg.VadModel)
+	}
+
+	return eng, nil
 }
 
 // Transcribe runs speech recognition on the given audio samples.
@@ -69,31 +84,68 @@ func (e *Engine) Transcribe(ctx context.Context, samples []float32, sampleRate i
 			return
 		}
 
-		// Long audio is split into windows; the offline recognizer crashes on a
-		// single very long utterance. Each window is decoded on its own stream
-		// and the texts are joined. Short audio yields one full-length window.
-		windows := splitWindows(samples, sampleRate, chunkTargetSeconds, chunkSearchSeconds)
-
-		var (
-			texts      []string
-			tokens     []string
-			timestamps []float32
-			lang       string
-			inferTotal time.Duration
-		)
-		for _, w := range windows {
-			if ctx.Err() != nil { // cancelled or timed out — stop early
-				break
+		// Long audio is segmented before recognition; the offline recognizer
+		// crashes on a single very long utterance. With a VAD the cuts land on
+		// real speech boundaries (silence dropped); otherwise we fall back to
+		// fixed windows cut at the quietest point. Segments are then decoded in
+		// batches so the encoder runs on the GPU with full occupancy.
+		var segs []segment
+		if e.vad != nil {
+			segs = segmentByVAD(e.vad, samples)
+		} else {
+			for _, w := range splitWindows(samples, sampleRate, chunkTargetSeconds, chunkSearchSeconds) {
+				segs = append(segs, segment{start: w.start, samples: samples[w.start:w.end]})
 			}
+		}
 
-			stream := sherpa.NewOfflineStream(e.inner)
-			stream.AcceptWaveform(sampleRate, samples[w.start:w.end])
+		res := e.decodeBatched(ctx, segs, sampleRate)
+		res.Duration = float32(len(samples)) / float32(sampleRate)
+		ch <- result{res: res}
+	}()
 
-			inferStart := time.Now()
-			e.inner.Decode(stream)
-			inferTotal += time.Since(inferStart)
+	select {
+	case <-ctx.Done():
+		return nil, fmt.Errorf("inference timed out: %w", ctx.Err())
+	case r := <-ch:
+		return r.res, nil
+	}
+}
 
-			out := stream.GetResult()
+// maxBatch bounds how many segments are decoded in one batched call. The batch
+// pads to its longest stream, so this caps peak GPU memory.
+const maxBatch = 16
+
+// decodeBatched decodes the segments in batches via DecodeStreams (the encoder
+// runs once per batch on the GPU) and joins the results in chronological order.
+// Per-segment token timestamps are shifted onto the original timeline.
+func (e *Engine) decodeBatched(ctx context.Context, segs []segment, sampleRate int) *recognizer.TranscriptionResult {
+	var (
+		texts      []string
+		tokens     []string
+		timestamps []float32
+		lang       string
+		inferTotal time.Duration
+	)
+
+	for _, b := range batchBounds(len(segs), maxBatch) {
+		if ctx.Err() != nil { // cancelled or timed out — stop early
+			break
+		}
+		batch := segs[b[0]:b[1]]
+
+		streams := make([]*sherpa.OfflineStream, len(batch))
+		for i, sg := range batch {
+			st := sherpa.NewOfflineStream(e.inner)
+			st.AcceptWaveform(sampleRate, sg.samples)
+			streams[i] = st
+		}
+
+		inferStart := time.Now()
+		e.inner.DecodeStreams(streams)
+		inferTotal += time.Since(inferStart)
+
+		for i, st := range streams {
+			out := st.GetResult()
 			if out != nil {
 				if t := strings.TrimSpace(out.Text); t != "" {
 					texts = append(texts, t)
@@ -102,31 +154,21 @@ func (e *Engine) Transcribe(ctx context.Context, samples []float32, sampleRate i
 					lang = out.Lang
 				}
 				tokens = append(tokens, out.Tokens...)
-				// Window timestamps are relative to the window; shift them back
-				// onto the original timeline.
-				offset := float32(w.start) / float32(sampleRate)
+				offset := float32(batch[i].start) / float32(sampleRate)
 				for _, ts := range out.Timestamps {
 					timestamps = append(timestamps, ts+offset)
 				}
 			}
-			sherpa.DeleteOfflineStream(stream)
+			sherpa.DeleteOfflineStream(st)
 		}
+	}
 
-		ch <- result{res: &recognizer.TranscriptionResult{
-			Text:          strings.Join(texts, " "),
-			Language:      lang,
-			Duration:      float32(len(samples)) / float32(sampleRate),
-			InferenceTime: inferTotal,
-			Tokens:        tokens,
-			Timestamps:    timestamps,
-		}}
-	}()
-
-	select {
-	case <-ctx.Done():
-		return nil, fmt.Errorf("inference timed out: %w", ctx.Err())
-	case r := <-ch:
-		return r.res, nil
+	return &recognizer.TranscriptionResult{
+		Text:          strings.Join(texts, " "),
+		Language:      lang,
+		InferenceTime: inferTotal,
+		Tokens:        tokens,
+		Timestamps:    timestamps,
 	}
 }
 
@@ -146,6 +188,9 @@ func (e *Engine) Close() {
 	case <-done:
 		// All goroutines finished — safe to free
 		sherpa.DeleteOfflineRecognizer(e.inner)
+		if e.vad != nil {
+			sherpa.DeleteVoiceActivityDetector(e.vad)
+		}
 	case <-time.After(30 * time.Second):
 		// Goroutines still running inside CGo. Freeing e.inner would cause
 		// use-after-free. Intentionally leak the C memory — the process is
