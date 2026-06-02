@@ -69,34 +69,54 @@ func (e *Engine) Transcribe(ctx context.Context, samples []float32, sampleRate i
 			return
 		}
 
-		stream := sherpa.NewOfflineStream(e.inner)
-		defer sherpa.DeleteOfflineStream(stream)
+		// Long audio is split into windows; the offline recognizer crashes on a
+		// single very long utterance. Each window is decoded on its own stream
+		// and the texts are joined. Short audio yields one full-length window.
+		windows := splitWindows(samples, sampleRate, chunkTargetSeconds, chunkSearchSeconds)
 
-		stream.AcceptWaveform(sampleRate, samples)
-
-		inferStart := time.Now()
-		e.inner.Decode(stream)
-		inferElapsed := time.Since(inferStart)
-
-		out := stream.GetResult()
-		var text, lang string
-		var tokens []string
-		var timestamps []float32
-		if out != nil {
-			text = strings.TrimSpace(out.Text)
-			lang = out.Lang
-			if len(out.Tokens) > 0 {
-				tokens = out.Tokens
+		var (
+			texts      []string
+			tokens     []string
+			timestamps []float32
+			lang       string
+			inferTotal time.Duration
+		)
+		for _, w := range windows {
+			if ctx.Err() != nil { // cancelled or timed out — stop early
+				break
 			}
-			if len(out.Timestamps) > 0 {
-				timestamps = out.Timestamps
+
+			stream := sherpa.NewOfflineStream(e.inner)
+			stream.AcceptWaveform(sampleRate, samples[w.start:w.end])
+
+			inferStart := time.Now()
+			e.inner.Decode(stream)
+			inferTotal += time.Since(inferStart)
+
+			out := stream.GetResult()
+			if out != nil {
+				if t := strings.TrimSpace(out.Text); t != "" {
+					texts = append(texts, t)
+				}
+				if lang == "" {
+					lang = out.Lang
+				}
+				tokens = append(tokens, out.Tokens...)
+				// Window timestamps are relative to the window; shift them back
+				// onto the original timeline.
+				offset := float32(w.start) / float32(sampleRate)
+				for _, ts := range out.Timestamps {
+					timestamps = append(timestamps, ts+offset)
+				}
 			}
+			sherpa.DeleteOfflineStream(stream)
 		}
+
 		ch <- result{res: &recognizer.TranscriptionResult{
-			Text:          text,
+			Text:          strings.Join(texts, " "),
 			Language:      lang,
 			Duration:      float32(len(samples)) / float32(sampleRate),
-			InferenceTime: inferElapsed,
+			InferenceTime: inferTotal,
 			Tokens:        tokens,
 			Timestamps:    timestamps,
 		}}

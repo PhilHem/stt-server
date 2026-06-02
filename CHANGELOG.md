@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.4.3 - 2026-06-02
+
+### Fixed
+
+- Recordings longer than a few minutes are transcribed in full.
+
 ## v0.4.2 - 2026-06-02
 
 ### Fixed
