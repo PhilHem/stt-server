@@ -73,4 +73,11 @@ type Config struct {
 	// http://localhost:8012/diarize). Used instead of DiarizeURL when the caller
 	// supplies a speaker-count hint of 1..4. Optional; falls back to DiarizeURL.
 	FastDiarizeURL string
+
+	// FastDiarizeMaxSeconds caps the audio length routed to the fast diarizer.
+	// Sortformer's attention memory grows ~quadratically with length, so long
+	// recordings OOM; above this many seconds the general-purpose diarizer
+	// (pyannote, bounded memory) is used instead regardless of the speaker
+	// hint. 0 disables the cap.
+	FastDiarizeMaxSeconds int
 }

@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.8.1 - 2026-06-03
+
+### Fixed
+
+- Recordings longer than a few minutes keep their speaker labels: audio above the fast diarizer's length cap is sent to the general-purpose diarizer instead of exhausting GPU memory on the fast one.
+- A fast-diarizer failure now retries with the general-purpose diarizer instead of returning an unlabelled transcript.
+
 ## v0.8.0 - 2026-06-03
 
 ### Added
