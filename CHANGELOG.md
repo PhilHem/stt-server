@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.8.2 - 2026-06-20
+
+### Changed
+
+- Long audio is decoded four windows at a time instead of six, lowering the peak GPU memory a single transcription holds.
+
 ## v0.8.1 - 2026-06-03
 
 ### Fixed
