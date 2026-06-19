@@ -175,11 +175,11 @@ func (e *Engine) pickDiarizer(diar recognizer.DiarizeOptions, durationSec float6
 // pads to its longest stream and the fp32 encoder's activations scale with
 // batch×length, so this caps peak GPU memory — kept small because the GPU is
 // shared with other models and a failed allocation aborts the process. At a
-// 120 s window this puts the peak working set around 6 GB, so long recordings
-// decode within a modest VRAM budget regardless of total length; the extra
-// sequential batches cost some wall time but stay well inside the request
-// timeout even for multi-hour audio.
-const maxBatch = 2
+// 120 s window this puts the peak working set around 11 GB, so long recordings
+// decode within a bounded, length-independent VRAM budget that keeps a healthy
+// margin on a shared GPU while recovering most of the throughput a larger batch
+// would give; the peak is constant regardless of total audio length.
+const maxBatch = 4
 
 // decodeBatched decodes the segments in batches via DecodeStreams (the encoder
 // runs once per batch on the GPU) and joins the results in chronological order.
