@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +27,7 @@ type Engine struct {
 	wg        sync.WaitGroup
 	closed    bool
 	modelType string
+	budget    *Budget // process-global VRAM admission controller; nil = unbounded
 }
 
 // New creates a sherpa-onnx Engine from the given configuration.
@@ -48,7 +50,7 @@ func New(cfg recognizer.Config) (recognizer.Engine, error) {
 		return nil, fmt.Errorf("sherpa-onnx failed to create recognizer (check model files)")
 	}
 
-	eng := &Engine{inner: r, modelType: modelType}
+	eng := &Engine{inner: r, modelType: modelType, budget: sharedBudget()}
 
 	// Optional voice-activity detector: when present, long audio is split on
 	// real speech boundaries instead of by fixed windows.
@@ -137,10 +139,22 @@ func (e *Engine) Transcribe(ctx context.Context, samples []float32, sampleRate i
 				segs[i].speaker = -1
 			}
 		default:
-			for _, w := range splitWindows(samples, sampleRate, chunkTargetSeconds, chunkSearchSeconds) {
+			// Pre-cap the window so a single stream never exceeds the VRAM budget
+			// (no-op when unbounded). Long files just yield more, smaller windows.
+			target := chunkTargetSeconds
+			if e.budget != nil {
+				if mw := int(math.Floor(e.budget.maxWindowSeconds())); mw >= 1 && mw < target {
+					target = mw
+				}
+			}
+			for _, w := range splitWindows(samples, sampleRate, target, chunkSearchSeconds) {
 				segs = append(segs, segment{start: w.start, samples: samples[w.start:w.end], speaker: -1})
 			}
 		}
+
+		// Sub-split any segment (e.g. a long diarized/VAD turn) that alone would
+		// exceed the budget, so every decoded stream fits at batch size 1.
+		segs = e.ensureFitsBudget(segs, sampleRate)
 
 		res := e.decodeBatched(ctx, segs, sampleRate)
 		res.Duration = float32(len(samples)) / float32(sampleRate)
@@ -178,8 +192,84 @@ func (e *Engine) pickDiarizer(diar recognizer.DiarizeOptions, durationSec float6
 // 120 s window this puts the peak working set around 11 GB, so long recordings
 // decode within a bounded, length-independent VRAM budget that keeps a healthy
 // margin on a shared GPU while recovering most of the throughput a larger batch
-// would give; the peak is constant regardless of total audio length.
+// would give; the peak is constant regardless of total audio length. This fixed
+// cap is only the fallback used when VRAM admission control is disabled
+// (STT_VRAM_BUDGET_MB unset); when a budget is set, planBatches sizes every
+// batch to the budget instead (see budget.go).
 const maxBatch = 4
+
+// grp is a half-open [i,j) range of segments decoded together, carrying the
+// predicted VRAM cost (GB) reserved from the budget for that batch.
+type grp struct {
+	i, j int
+	cost float64
+}
+
+// planBatches groups segments into decode batches. Unbounded, it falls back to
+// fixed maxBatch-sized groups (current behaviour). With a budget set it greedily
+// grows each batch while the predicted cost (safety·max(floor, k·n·longestSec −
+// base)) stays within budget and within the per-length batch limit — so peak
+// VRAM is bounded no matter how many segments a long file produces.
+func (e *Engine) planBatches(segs []segment, sampleRate int) []grp {
+	var groups []grp
+	if e.budget == nil {
+		for _, b := range batchBounds(len(segs), maxBatch) {
+			groups = append(groups, grp{i: b[0], j: b[1]})
+		}
+		return groups
+	}
+	secs := func(s segment) float64 { return float64(len(s.samples)) / float64(sampleRate) }
+	i := 0
+	for i < len(segs) {
+		longest := 0.0
+		j := i
+		for j < len(segs) {
+			cand := math.Max(longest, secs(segs[j]))
+			n := j - i + 1
+			if n > e.budget.maxBatchFor(cand) {
+				break
+			}
+			if e.budget.cost(n, cand) > e.budget.budgetGB {
+				break
+			}
+			longest = cand
+			j++
+		}
+		if j == i { // always make progress; the window pre-cap guarantees 1 fits
+			j = i + 1
+			longest = secs(segs[i])
+		}
+		groups = append(groups, grp{i: i, j: j, cost: e.budget.cost(j-i, longest)})
+		i = j
+	}
+	return groups
+}
+
+// ensureFitsBudget sub-splits any segment longer than the budget's max single
+// stream so every decoded stream fits at batch size 1. No-op when unbounded; the
+// default branch already pre-caps its own windows, so this mainly bounds long
+// diarized/VAD turns.
+func (e *Engine) ensureFitsBudget(segs []segment, sampleRate int) []segment {
+	if e.budget == nil {
+		return segs
+	}
+	maxWin := int(math.Floor(e.budget.maxWindowSeconds()))
+	if maxWin < 1 {
+		maxWin = 1
+	}
+	maxSamples := maxWin * sampleRate
+	var out []segment
+	for _, sg := range segs {
+		if len(sg.samples) <= maxSamples {
+			out = append(out, sg)
+			continue
+		}
+		for _, w := range splitWindows(sg.samples, sampleRate, maxWin, chunkSearchSeconds) {
+			out = append(out, segment{start: sg.start + w.start, samples: sg.samples[w.start:w.end], speaker: sg.speaker})
+		}
+	}
+	return out
+}
 
 // decodeBatched decodes the segments in batches via DecodeStreams (the encoder
 // runs once per batch on the GPU) and joins the results in chronological order.
@@ -199,11 +289,18 @@ func (e *Engine) decodeBatched(ctx context.Context, segs []segment, sampleRate i
 		inferTotal time.Duration
 	)
 
-	for _, b := range batchBounds(len(segs), maxBatch) {
+	for _, g := range e.planBatches(segs, sampleRate) {
 		if ctx.Err() != nil { // cancelled or timed out — stop early
 			break
 		}
-		batch := segs[b[0]:b[1]]
+		// Reserve this batch's predicted VRAM from the global budget; blocks
+		// (cancellable) until it frees, so the sum of concurrent decodes never
+		// exceeds the budget and the onnxruntime arena's high-water mark stays
+		// ≤ budget. No-op when unbounded.
+		if err := e.budget.acquire(ctx, g.cost); err != nil {
+			break // ctx cancelled/timed out while waiting for budget
+		}
+		batch := segs[g.i:g.j]
 
 		streams := make([]*sherpa.OfflineStream, len(batch))
 		for i, sg := range batch {
@@ -215,6 +312,7 @@ func (e *Engine) decodeBatched(ctx context.Context, segs []segment, sampleRate i
 		inferStart := time.Now()
 		e.inner.DecodeStreams(streams)
 		inferTotal += time.Since(inferStart)
+		e.budget.release(g.cost)
 
 		for i, st := range streams {
 			out := st.GetResult()
