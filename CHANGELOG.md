@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.8.3 - 2026-06-21
+
+### Added
+
+- Speech recognition accepts a GPU-memory budget and sizes each decoding pass to stay within it, decoding long audio as more, smaller passes instead of one large batch.
+
 ## v0.8.2 - 2026-06-20
 
 ### Changed
